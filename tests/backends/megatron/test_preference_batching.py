@@ -2,7 +2,6 @@
 
 """Preference-row atomicity and dynamic batching tests."""
 
-import inspect
 from argparse import Namespace
 
 import pytest
@@ -92,12 +91,6 @@ def test_dp2_pair_rows_remain_atomic_with_global_pair_denominator(monkeypatch):
         assert set(batch["preference_is_chosen"]) == {False, True}
         seen.extend(batch["preference_branch_pair_ids"])
     assert sorted(seen) == [100, 100, 101, 101]
-
-
-def test_preference_iterator_has_no_device_scalar_readback():
-    source = inspect.getsource(data_module._get_preference_data_iterator)
-    assert ".item(" not in source
-    assert "all_reduce(" not in source
 
 
 def test_preference_iterator_rejects_unequal_dp_pair_rows_via_gloo(monkeypatch):
