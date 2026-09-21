@@ -2,6 +2,8 @@
 
 Relax supports Direct Preference Optimization (DPO) through the offline SFT data path. The public Task 31 recipe is [`run-qwen3-0.6B-ultrafeedback-1xgpu.sh`](../../../scripts/training/dpo/run-qwen3-0.6B-ultrafeedback-1xgpu.sh).
 
+V1 supports synchronous text-only SFT with TP=CP=PP=1. Preference objectives require `--task-type causal_lm` and reject `--sft-async-prepack`, MTP (including MTP-only training), chunked logits, and LoRA. Regular SFT CPU dataset prefetch remains available. Global batch size and optimizer scheduler increments count preference pairs, including a smaller explicitly sized batch.
+
 ## Prepare the preference subset
 
 Generate the deterministic UltraFeedback subset from its pinned dataset revision:
@@ -70,3 +72,5 @@ The companion recipe is `scripts/training/reward_modeling/run-qwen3-0.6B-ultrafe
 Both DPO and reward modeling write acceptance data under `<SAVE_DIR>/<EXP_NAME>/preference_eval/`: the canonical probe contract and SHA-256, the DP/micro-batch plan and SHA-256, step-0/final per-pair JSONL, and a 10,000-replicate FP64 PCG64 paired-bootstrap summary. Final evaluation fails if probe preprocessing, pair order, or the batch plan differs from step 0. Retain this directory together with the expanded command, environment inventory, raw stdout/stderr, metrics, and curves.
 
 Reward-model Megatron checkpoints persist `sft_objective=reward_model`, `head_type=reward_model_terminal_v1`, and `checkpoint_role=actor`. Resume rejects missing or incompatible metadata, non-exact scalar-head keys/shapes, partial optimizer/RNG restoration, and PPO critic checkpoints.
+
+RM uses its own scalar head while sharing the SFT training loop. Keep `--task-type causal_lm`; `seq_cls` installs a different head and cannot be combined with a preference objective. The same v1 prepack/MTP/LoRA restrictions above apply to RM.

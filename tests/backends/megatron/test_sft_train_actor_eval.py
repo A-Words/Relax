@@ -80,3 +80,34 @@ def test_evaluation_step_mapping_is_completed_for_sft_and_zero_based_for_rl():
     args.loss_type = "policy_loss"
     assert evaluation_step_for_rollout(args, rollout_id=0) == 0
     assert evaluation_step_for_rollout(args, rollout_id=9) == 9
+
+
+def test_sft_lookahead_uses_completed_step_eval_boundaries():
+    """Exercise the actual lookahead policy without importing the GPU actor."""
+    import ast
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[3] / "relax/backends/megatron/actor.py"
+    tree = ast.parse(source.read_text())
+    function = next(
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_should_pause_sft_lookahead"
+    )
+    namespace = {
+        "Namespace": Namespace,
+        "evaluation_step_for_rollout": evaluation_step_for_rollout,
+        "should_run_sft_eval": should_run_sft_eval,
+        "should_run_sft_predict": should_run_sft_predict,
+    }
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"), namespace)
+    for objective in ("causal_lm", "dpo", "reward_model"):
+        args = Namespace(
+            loss_type="sft",
+            sft_objective=objective,
+            num_rollout=10,
+            eval_interval=2,
+            eval_size=512,
+            sft_predict_interval=None,
+            save=None,
+        )
+        assert not namespace["_should_pause_sft_lookahead"](args, 0)
+        assert namespace["_should_pause_sft_lookahead"](args, 1)

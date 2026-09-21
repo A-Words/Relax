@@ -58,6 +58,9 @@ def test_preference_mode_is_nested_under_sft():
 @pytest.mark.parametrize(
     ("overrides", "match"),
     [
+        ({"sft_async_prepack": True}, "sft-async-prepack"),
+        ({"task_type": "seq_cls"}, "task-type causal_lm"),
+        ({"mtp_only_training": True}, "MTP-only"),
         ({"n_samples_per_prompt": 2}, "n-samples-per-prompt"),
         ({"tensor_model_parallel_size": 2}, "TP=CP=PP=1"),
         ({"context_parallel_size": 2}, "TP=CP=PP=1"),
@@ -113,3 +116,12 @@ def test_reward_model_rejects_hf_export():
 def test_dpo_and_causal_sft_keep_hf_export_support():
     validate_preference_args(_args(save_hf="/models/dpo-{rollout_id}"))
     validate_preference_args(_args(sft_objective="causal_lm", save_hf="/models/sft-{rollout_id}"))
+
+
+@pytest.mark.parametrize("objective", ["dpo", "reward_model"])
+@pytest.mark.parametrize(
+    "update", [{"sft_async_prepack": True}, {"task_type": "seq_cls"}, {"mtp_only_training": True}]
+)
+def test_preference_objectives_reject_conflicting_sft_paths(objective, update):
+    with pytest.raises(ValueError):
+        validate_preference_args(_args(sft_objective=objective, **update))

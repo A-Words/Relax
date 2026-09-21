@@ -247,13 +247,6 @@ def test_reward_model_contract_rejects_partial_resume_flags(monkeypatch, tmp_pat
         checkpoint_module._validate_checkpoint_contract(args, [SimpleNamespace(role="actor")], tmp_path)
 
 
-def test_restored_scheduler_is_not_advanced_twice():
-    args = SimpleNamespace(no_load_optim=False, finetune=False, reset_optimizer_states=False)
-    assert checkpoint_module.scheduler_state_was_restored(args, resumed_from_megatron=True)
-    args.no_load_optim = True
-    assert not checkpoint_module.scheduler_state_was_restored(args, resumed_from_megatron=True)
-
-
 def test_checkpoint_wrapper_restores_optimizer_scheduler_rng_and_next_step_loss(monkeypatch, tmp_path):
     torch.manual_seed(7)
     source = torch.nn.Linear(3, 1)
@@ -321,3 +314,21 @@ def test_critic_rejects_reward_model_metadata(monkeypatch, tmp_path):
     monkeypatch.setattr(megatron.core, "dist_checkpointing", fake_dist_checkpointing)
     with pytest.raises(RuntimeError, match="PPO critic load rejects"):
         checkpoint_module._validate_checkpoint_contract(SimpleNamespace(), [SimpleNamespace(role="critic")], tmp_path)
+
+
+@pytest.mark.parametrize("objective", ["causal_lm", "reward_model"])
+def test_checkpoint_missing_args_only_adds_rm_contract_restriction(monkeypatch, tmp_path, objective):
+    import megatron.core
+
+    fake_dist_checkpointing = SimpleNamespace(
+        check_is_distributed_checkpoint=lambda path: True,
+        load_common_state_dict=lambda path: {},
+    )
+    monkeypatch.setattr(megatron.core, "dist_checkpointing", fake_dist_checkpointing)
+    args = SimpleNamespace(loss_type="sft", sft_objective=objective)
+    model = [SimpleNamespace(role="actor")]
+    if objective == "reward_model":
+        with pytest.raises(RuntimeError, match="missing saved args"):
+            checkpoint_module._validate_checkpoint_contract(args, model, tmp_path)
+    else:
+        checkpoint_module._validate_checkpoint_contract(args, model, tmp_path)

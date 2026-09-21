@@ -5,6 +5,7 @@
 import hashlib
 import threading
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -308,6 +309,33 @@ class PreferenceStreamingDataset:
                     )
                 raise PreferenceDataError("schema", message, source_idx=index, pair_id=pair_id)
             seen.add(pair_id)
+
+    def restrict_training_indices(self, indices: Iterable[int], *, dataset_seed_offset: int = 0) -> None:
+        """Restrict epoch shuffling to the provided physical row IDs."""
+        if self.index_manager.current_epoch >= 0 or self.index_manager.position != 0:
+            raise RuntimeError("training indices must be restricted before the dataset is shuffled or consumed")
+        index_pool = tuple(indices)
+        if not index_pool:
+            raise ValueError("training indices must not be empty")
+        if len(set(index_pool)) != len(index_pool):
+            raise ValueError("training indices must be unique")
+        if any(not isinstance(index, int) or index < 0 or index >= len(self.reader) for index in index_pool):
+            raise ValueError(f"training indices must be integers in [0, {len(self.reader)})")
+        self.index_manager = IndexManager(
+            len(index_pool),
+            seed=self.index_manager.seed,
+            index_pool=index_pool,
+            dataset_seed_offset=dataset_seed_offset,
+        )
+
+    def get_batch_by_indices(self, indices: Iterable[int]) -> list[ProcessedPreferencePair]:
+        """Read physical rows in order without advancing the training
+        cursor."""
+        self._raise_if_failed()
+        indices = tuple(indices)
+        if any(not isinstance(index, int) or index < 0 or index >= len(self.reader) for index in indices):
+            raise ValueError(f"row indices must be integers in [0, {len(self.reader)})")
+        return [self.get_processed_pair(index) for index in indices]
 
     def shuffle(self, epoch_id: int, position: int = 0) -> None:
         self.index_manager.shuffle(epoch_id)

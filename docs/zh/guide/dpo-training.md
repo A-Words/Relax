@@ -2,6 +2,8 @@
 
 Relax 通过离线 SFT 数据链路支持 Direct Preference Optimization（DPO）。Task 31 的公开 recipe 是 [`run-qwen3-0.6B-ultrafeedback-1xgpu.sh`](../../../scripts/training/dpo/run-qwen3-0.6B-ultrafeedback-1xgpu.sh)。
 
+V1 支持 TP=CP=PP=1 的同步纯文本 SFT 路径。偏好训练要求 `--task-type causal_lm`，不支持 `--sft-async-prepack`、MTP（含 MTP-only）、chunked logits 和 LoRA；仍可使用 SFT 的 CPU 数据预取。global batch size 和 optimizer scheduler 的增量均按 preference pair 计数，也适用于显式指定实际大小的较小批次。
+
 ## 准备偏好数据子集
 
 从固定的数据集 revision 生成确定性的 UltraFeedback 子集：
@@ -70,3 +72,5 @@ DPO 在 `train/dpo/` 命名空间下记录以下训练指标：
 DPO 与 Reward Modeling 都会在 `<SAVE_DIR>/<EXP_NAME>/preference_eval/` 下写出验收数据：canonical probe 合同及 SHA-256、DP/micro-batch plan 及 SHA-256、step-0/final 逐 pair JSONL，以及 10,000 次 FP64 PCG64 paired-bootstrap summary。若 final 与 step 0 的预处理、pair 顺序或 batch plan 不一致，评测会立即失败。提交证据时需将该目录与展开后的命令、环境清单、原始 stdout/stderr、metrics 和曲线一并保留。
 
 Reward Model 的 Megatron checkpoint 会持久化 `sft_objective=reward_model`、`head_type=reward_model_terminal_v1` 与 `checkpoint_role=actor`。resume 会拒绝缺失或不兼容的 metadata、非精确 scalar-head key/shape、只恢复部分 optimizer/RNG 状态，以及 PPO critic checkpoint。
+
+RM 安装自己的标量训练头，并复用 SFT 训练循环。需保留 `--task-type causal_lm`；`seq_cls` 会安装另一种训练头，不能与偏好训练组合。上文列出的 v1 prepack/MTP/LoRA 限制也适用于 RM。
