@@ -106,8 +106,6 @@ def test_pinned_seqlen_sampler_consumes_pair_costs_and_keeps_equal_dp_groups():
     """Exercise the Docker-pinned TransferQueue sampler, not a local stand-
     in."""
     transfer_queue = pytest.importorskip("transfer_queue")
-    if vars(transfer_queue).get("__relax_ci_stub__", False):
-        pytest.skip("real TransferQueue sampler required; CPU CI provides an import-only stub")
     sampler_type = transfer_queue.SeqlenBalancedSampler
     source_path = Path(inspect.getsourcefile(sampler_type) or "")
     normalized_source = source_path.read_bytes().replace(b"\r\n", b"\n")
