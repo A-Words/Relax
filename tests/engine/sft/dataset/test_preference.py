@@ -221,3 +221,46 @@ def test_pack_pair_rows_and_custom_meta_are_aligned(tmp_path: Path):
     assert len(batch["pair_ids"]) == len(custom_meta) == 2
     for idx, metadata in enumerate(custom_meta):
         assert metadata["total_lengths"] == (batch["chosen_total_lengths"][idx] + batch["rejected_total_lengths"][idx])
+
+
+def test_preference_split_eval_and_resume_preserve_pair_order(tmp_path: Path):
+    from relax.engine.sft.runtime import resolve_sft_split_indices
+
+    path = tmp_path / "split.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {
+                "prompt_id": f"pair-{i}",
+                "prompt": [{"role": "user", "content": "question"}],
+                "chosen": {"role": "assistant", "content": "good"},
+                "rejected": {"role": "assistant", "content": "bad"},
+            }
+            for i in range(10)
+        ],
+    )
+    train_indices, eval_indices = resolve_sft_split_indices(10, 0.3, seed=42)
+    dataset = _dataset(path)
+    dataset.restrict_training_indices(train_indices, dataset_seed_offset=1)
+    dataset.shuffle(0)
+    dataset.get_batch(5)
+    cursor = dataset.index_manager.position
+    assert [pair.source_idx for pair in dataset.get_batch_by_indices(eval_indices)] == list(eval_indices)
+    assert dataset.index_manager.position == cursor
+    expected, _ = dataset.get_batch(12)
+    assert {pair.source_idx for pair in expected} <= set(train_indices)
+    restored = _dataset(path)
+    restored.restrict_training_indices(train_indices, dataset_seed_offset=1)
+    restored.shuffle(0, position=5)
+    actual, _ = restored.get_batch(12)
+    assert [pair.pair_id for pair in actual] == [pair.pair_id for pair in expected]
+    with pytest.raises(RuntimeError, match="before"):
+        restored.restrict_training_indices(train_indices)
+
+
+@pytest.mark.parametrize("indices", [[], [0, 0], [-1], [2], [0.5]])
+def test_preference_split_rejects_invalid_training_indices(tmp_path: Path, indices):
+    path = tmp_path / "split.jsonl"
+    _write_jsonl(path, [{"prompt_id": "pair-0"}, {"prompt_id": "pair-1"}])
+    with pytest.raises(ValueError):
+        _dataset(path).restrict_training_indices(indices)

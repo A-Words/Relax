@@ -2,6 +2,8 @@
 
 Relax 通过离线 SFT 数据链路支持 Direct Preference Optimization（DPO）。Task 31 的公开 recipe 是 [`run-qwen3-0.6B-ultrafeedback-1xgpu.sh`](../../../scripts/training/dpo/run-qwen3-0.6B-ultrafeedback-1xgpu.sh)。
 
+V1 支持 TP=CP=PP=1 的同步纯文本 SFT 路径。偏好训练要求 `--task-type causal_lm`，不支持 `--sft-async-prepack`、MTP（含 MTP-only）、chunked logits 和 LoRA；仍可使用 SFT 的 CPU 数据预取。global batch size 和 optimizer scheduler 的增量均按 preference pair 计数，也适用于显式指定实际大小的较小批次。
+
 ## 准备偏好数据子集
 
 从固定的数据集 revision 生成确定性的 UltraFeedback 子集：

@@ -2,6 +2,8 @@
 
 Relax supports Direct Preference Optimization (DPO) through the offline SFT data path. The public Task 31 recipe is [`run-qwen3-0.6B-ultrafeedback-1xgpu.sh`](../../../scripts/training/dpo/run-qwen3-0.6B-ultrafeedback-1xgpu.sh).
 
+V1 supports synchronous text-only SFT with TP=CP=PP=1. Preference objectives require `--task-type causal_lm` and reject `--sft-async-prepack`, MTP (including MTP-only training), chunked logits, and LoRA. Regular SFT CPU dataset prefetch remains available. Global batch size and optimizer scheduler increments count preference pairs, including a smaller explicitly sized batch.
+
 ## Prepare the preference subset
 
 Generate the deterministic UltraFeedback subset from its pinned dataset revision:

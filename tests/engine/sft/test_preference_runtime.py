@@ -60,6 +60,9 @@ def test_preference_mode_is_nested_under_sft():
 @pytest.mark.parametrize(
     ("overrides", "match"),
     [
+        ({"sft_async_prepack": True}, "sft-async-prepack"),
+        ({"task_type": "seq_cls"}, "task-type causal_lm"),
+        ({"mtp_only_training": True}, "MTP-only"),
         ({"n_samples_per_prompt": 2}, "n-samples-per-prompt"),
         ({"tensor_model_parallel_size": 2}, "TP=CP=PP=1"),
         ({"context_parallel_size": 2}, "TP=CP=PP=1"),
