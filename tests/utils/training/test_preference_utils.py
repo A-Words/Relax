@@ -95,5 +95,5 @@ def test_pair_packer_is_deterministic_complete_and_capacity_safe():
 
 
 def test_pair_packer_reports_oversize_pair():
-    with pytest.raises(ValueError, match="oversize.*pair-a.*11"):
+    with pytest.raises(ValueError, match=r"oversize preference pair 'pair-a'.*cost 11, capacity=10"):
         pack_preference_pair_indices([11], ["pair-a"], capacity=10)

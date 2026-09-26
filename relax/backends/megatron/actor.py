@@ -1808,9 +1808,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with inverse_timer("train_wait"), timer("train"):
             # All RL algorithms need ref/teacher/actor inline forwards to produce old_log_probs.
-            standard_dpo = (
-                is_preference_mode(self.args) and self.args.sft_objective == "dpo" and not self.args.dpo_reference_free
-            )
+            standard_dpo = self._is_standard_dpo()
             should_compute_old_log_probs = self.args.compute_advantages_and_returns or standard_dpo
             # PPO fully_async has a standalone Advantages service that produces
             # advantages/returns via TransferQueue; every other path (including

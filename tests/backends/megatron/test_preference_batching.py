@@ -10,7 +10,6 @@ import pytest
 try:
     from relax.backends.megatron import data as data_module
     from relax.backends.megatron.data import expand_preference_rollout_data
-    from relax.utils.training.preference_utils import pack_preference_pair_indices
 except Exception as exc:
     pytest.skip(f"relax.backends.megatron unavailable: {exc}", allow_module_level=True)
 
@@ -35,15 +34,6 @@ def test_expand_keeps_pairs_atomic_and_preserves_dynamic_denominator():
     assert flat["preference_branch_pair_ids"] == [100, 100, 101, 101]
     assert flat["preference_is_chosen"] == [True, False, True, False]
     assert flat["preference_pair_costs"] == [4, 4]
-
-
-def test_capacity_packer_is_deterministic_complete_and_bounded():
-    costs = [2, 4, 4, 5, 5]
-    first = pack_preference_pair_indices(costs, ["a", "b", "c", "d", "e"], capacity=10)
-    second = pack_preference_pair_indices(costs, ["a", "b", "c", "d", "e"], capacity=10)
-    assert first == second
-    assert sorted(index for group in first for index in group) == list(range(len(costs)))
-    assert all(sum(costs[index] for index in group) <= 10 for group in first)
 
 
 def test_preference_iterator_validates_step_global_pair_denominator(monkeypatch):
@@ -103,8 +93,3 @@ def test_preference_iterator_rejects_unequal_dp_pair_rows_via_gloo(monkeypatch):
     args = Namespace(global_batch_size=4, max_tokens_per_gpu=16)
     with pytest.raises(ValueError, match="equal local pair rows"):
         data_module._get_preference_data_iterator(args, flat, None)
-
-
-def test_oversize_error_names_pair_cost_and_capacity():
-    with pytest.raises(ValueError, match=r"oversize preference pair 'pair-x'.*cost 11, capacity=10"):
-        pack_preference_pair_indices([11], ["pair-x"], capacity=10)
