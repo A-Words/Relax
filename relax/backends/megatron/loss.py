@@ -34,7 +34,9 @@ from relax.utils.training.ppo_utils import (
 from relax.utils.training.preference_utils import (
     build_preference_pair_indices,
     dpo_pair_loss,
-    require_tensor_condition,
+    dpo_rewards,
+    masked_sequence_sums,
+    preference_accuracy,
 )
 from relax.utils.types import RolloutBatch
 
@@ -1275,25 +1277,6 @@ def dpo_loss_function(
     )
     policy_token_log_probs = values["log_probs"]
 
-    def sequence_sums(token_values) -> torch.Tensor:
-        if len(token_values) != len(batch["loss_masks"]):
-            raise ValueError("DPO token log-probabilities are not branch aligned")
-        sums = []
-        for branch_values, mask in zip(token_values, batch["loss_masks"], strict=True):
-            branch_values = torch.as_tensor(branch_values, device=logits.device)
-            branch_mask = mask.to(device=logits.device, dtype=branch_values.dtype)
-            if branch_values.shape != branch_mask.shape:
-                raise ValueError(
-                    "DPO branch log-probability/mask shape mismatch: "
-                    f"{tuple(branch_values.shape)} vs {tuple(branch_mask.shape)}"
-                )
-            require_tensor_condition(
-                branch_mask.to(dtype=torch.bool).any(),
-                "DPO branch completion mask must contain at least one supervised token",
-            )
-            sums.append((branch_values * branch_mask).sum())
-        return torch.stack(sums)
-
     pair_ids = batch.get("preference_branch_pair_ids")
     branch_is_chosen = batch.get("preference_is_chosen")
     if pair_ids is None or branch_is_chosen is None:
@@ -1302,23 +1285,19 @@ def dpo_loss_function(
     chosen_index = torch.as_tensor(chosen_indices, dtype=torch.long, device=logits.device)
     rejected_index = torch.as_tensor(rejected_indices, dtype=torch.long, device=logits.device)
 
-    policy_sums = sequence_sums(policy_token_log_probs)
+    policy_sums = masked_sequence_sums(policy_token_log_probs, batch["loss_masks"], logits.device)
     policy_chosen = policy_sums.index_select(0, chosen_index)
     policy_rejected = policy_sums.index_select(0, rejected_index)
     reference_free = bool(args.dpo_reference_free)
     if reference_free:
         reference_chosen = reference_rejected = None
-        ref_chosen_for_metrics = torch.zeros_like(policy_chosen)
-        ref_rejected_for_metrics = torch.zeros_like(policy_rejected)
     else:
         reference_values = batch.get("ref_log_probs")
         if reference_values is None:
             raise ValueError("standard DPO batch is missing frozen-reference log-probabilities")
-        reference_sums = sequence_sums(reference_values)
+        reference_sums = masked_sequence_sums(reference_values, batch["loss_masks"], logits.device)
         reference_chosen = reference_sums.index_select(0, chosen_index)
         reference_rejected = reference_sums.index_select(0, rejected_index)
-        ref_chosen_for_metrics = reference_chosen
-        ref_rejected_for_metrics = reference_rejected
     pair_losses = dpo_pair_loss(
         policy_chosen,
         policy_rejected,
@@ -1327,15 +1306,13 @@ def dpo_loss_function(
         beta=args.dpo_beta,
         reference_free=reference_free,
     )
-    chosen_rewards = args.dpo_beta * (policy_chosen - ref_chosen_for_metrics)
-    rejected_rewards = args.dpo_beta * (policy_rejected - ref_rejected_for_metrics)
+    chosen_rewards = dpo_rewards(policy_chosen, reference_chosen, beta=args.dpo_beta)
+    rejected_rewards = dpo_rewards(policy_rejected, reference_rejected, beta=args.dpo_beta)
     # pair_losses is never empty: build_preference_pair_indices raises on an
     # empty micro-batch, so no gradient-safety fallback is needed here.
     loss = pair_losses.sum()
     reward_margin = chosen_rewards - rejected_rewards
-    tie = reward_margin.abs() <= 1e-6
-    strict = reward_margin > 0
-    correct = reward_margin > 1e-6
+    strict, tie, tie_aware = preference_accuracy(reward_margin)
     metrics = {
         "dpo/loss": pair_losses.detach().sum(),
         "dpo/logps_chosen": policy_chosen.detach().sum(),
@@ -1345,7 +1322,7 @@ def dpo_loss_function(
         "dpo/reward_margin": reward_margin.detach().sum(),
         "dpo/strict_accuracy": strict.to(torch.float32).detach().sum(),
         "dpo/tie_rate": tie.to(torch.float32).detach().sum(),
-        "dpo/tie_aware_accuracy": (correct.to(torch.float32) + 0.5 * tie.to(torch.float32)).detach().sum(),
+        "dpo/tie_aware_accuracy": tie_aware.detach().sum(),
     }
     metrics["dpo/pair_accuracy"] = metrics["dpo/strict_accuracy"]
     if not reference_free:

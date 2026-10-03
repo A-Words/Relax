@@ -23,6 +23,48 @@ def _validate_same_shape(name: str, *values: torch.Tensor) -> None:
         raise ValueError(f"{name} tensors must have identical shapes, got {shapes}")
 
 
+def masked_sequence_sums(
+    values: Sequence[torch.Tensor], masks: Sequence[torch.Tensor], device: torch.device
+) -> torch.Tensor:
+    """Sum each branch against its already aligned mask, preserving gradients
+    and dtype."""
+    if len(values) != len(masks):
+        raise ValueError("preference token values/masks are not branch aligned")
+    sums = []
+    for value, mask in zip(values, masks, strict=True):
+        value = torch.as_tensor(value, device=device)
+        mask = torch.as_tensor(mask, device=device, dtype=value.dtype)
+        if value.shape != mask.shape:
+            raise ValueError(
+                f"preference branch value/mask shape mismatch: {tuple(value.shape)} vs {tuple(mask.shape)}"
+            )
+        require_tensor_condition(
+            mask.to(dtype=torch.bool).any(),
+            "preference branch completion mask must contain at least one supervised token",
+        )
+        sums.append((value * mask).sum())
+    return torch.stack(sums)
+
+
+def dpo_rewards(
+    policy_log_probs: torch.Tensor, reference_log_probs: torch.Tensor | None, *, beta: float
+) -> torch.Tensor:
+    """Return implicit rewards; a missing reference selects reference-free
+    DPO."""
+    log_ratios = policy_log_probs if reference_log_probs is None else policy_log_probs - reference_log_probs
+    return beta * log_ratios
+
+
+def preference_accuracy(
+    margins: torch.Tensor, *, epsilon: float = 1e-6
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return strict wins, ties, and tie-aware accuracy for each pair."""
+    strict = margins > 0
+    ties = margins.abs() <= epsilon
+    tie_aware = (margins > epsilon).to(torch.float32) + 0.5 * ties.to(torch.float32)
+    return strict, ties, tie_aware
+
+
 def dpo_pair_loss(
     policy_chosen: torch.Tensor,
     policy_rejected: torch.Tensor,
@@ -118,6 +160,9 @@ def pack_preference_pair_indices(
 __all__ = [
     "build_preference_pair_indices",
     "dpo_pair_loss",
+    "dpo_rewards",
+    "masked_sequence_sums",
     "pack_preference_pair_indices",
+    "preference_accuracy",
     "require_tensor_condition",
 ]

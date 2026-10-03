@@ -53,6 +53,10 @@ def test_production_dpo_loss_matches_independent_reference_and_gradients(monkeyp
     actual, metrics = _run(monkeypatch, list(policy.unbind()), ref_values=list(reference.unbind()), pair_ids=pair_ids)
     expected = -F.logsigmoid(0.2 * ((policy[0::2] - policy[1::2]) - (reference[0::2] - reference[1::2]))).sum()
     torch.testing.assert_close(actual, expected)
+    expected_rewards = 0.2 * (policy.detach() - reference)
+    torch.testing.assert_close(metrics["dpo/reward_chosen"], expected_rewards[0::2].sum())
+    torch.testing.assert_close(metrics["dpo/reward_rejected"], expected_rewards[1::2].sum())
+    torch.testing.assert_close(metrics["dpo/reward_margin"], (expected_rewards[0::2] - expected_rewards[1::2]).sum())
     actual.backward()
     actual_grad = policy.grad.clone()
     policy.grad = None
@@ -91,9 +95,11 @@ def test_tie_metrics_are_epsilon_aware(monkeypatch):
 
 def test_reference_free_partition_and_num_samples_do_not_change_pair_sum(monkeypatch):
     policy = [-1.0, -2.0, -0.5, -0.75]
-    first, _ = _run(monkeypatch, policy, reference_free=True, num_samples=1)
+    first, metrics = _run(monkeypatch, policy, reference_free=True, num_samples=1)
     second, _ = _run(monkeypatch, policy, reference_free=True, num_samples=999)
     torch.testing.assert_close(first, second)
+    torch.testing.assert_close(metrics["dpo/reward_chosen"], torch.tensor(-0.3))
+    torch.testing.assert_close(metrics["dpo/reward_rejected"], torch.tensor(-0.55))
     pair_losses = -F.logsigmoid(0.2 * (torch.tensor(policy)[0::2] - torch.tensor(policy)[1::2]))
     torch.testing.assert_close(first, pair_losses[:1].sum() + pair_losses[1:].sum())
 

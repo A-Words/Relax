@@ -10,7 +10,9 @@ import torch.nn.functional as F
 
 from relax.utils.training.preference_utils import (
     dpo_pair_loss,
+    masked_sequence_sums,
     pack_preference_pair_indices,
+    preference_accuracy,
     require_tensor_condition,
 )
 
@@ -29,6 +31,52 @@ def test_tensor_condition_uses_async_assert_without_python_bool_on_cuda(monkeypa
     require_tensor_condition(condition, "finite")
 
     assert calls == [(condition, "finite")]
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_masked_sequence_sums_preserves_values_dtype_and_gradients(dtype: torch.dtype):
+    values = [
+        torch.tensor([-100.0, -1.0, -2.0], dtype=dtype, requires_grad=True),
+        torch.tensor([-7.0, -99.0], dtype=dtype, requires_grad=True),
+    ]
+    masks = [torch.tensor([False, True, True]), torch.tensor([True, False])]
+
+    sums = masked_sequence_sums(values, masks, torch.device("cpu"))
+
+    torch.testing.assert_close(sums, torch.tensor([-3.0, -7.0], dtype=dtype))
+    sums.sum().backward()
+    torch.testing.assert_close(values[0].grad, torch.tensor([0.0, 1.0, 1.0], dtype=dtype))
+    torch.testing.assert_close(values[1].grad, torch.tensor([1.0, 0.0], dtype=dtype))
+
+
+@pytest.mark.parametrize(
+    ("masks", "match"),
+    [
+        ([], "branch aligned"),
+        ([torch.ones(1)], "shape mismatch"),
+        ([torch.zeros(2)], "at least one supervised token"),
+    ],
+)
+def test_masked_sequence_sums_rejects_invalid_masks(masks: list[torch.Tensor], match: str):
+    with pytest.raises(ValueError, match=match):
+        masked_sequence_sums([torch.zeros(2)], masks, torch.device("cpu"))
+
+
+@pytest.mark.parametrize(
+    ("epsilon", "expected_ties", "expected_tie_aware"),
+    [
+        (1e-6, [False, True, True, True, True, True, False], [0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 1.0]),
+        (0.0, [False, False, False, True, False, False, False], [0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]),
+    ],
+)
+def test_preference_accuracy_distinguishes_strict_wins_and_ties(epsilon, expected_ties, expected_tie_aware):
+    margins = torch.tensor([-2e-6, -1e-6, -0.5e-6, 0.0, 0.5e-6, 1e-6, 2e-6], dtype=torch.float64)
+
+    strict, ties, tie_aware = preference_accuracy(margins, epsilon=epsilon)
+
+    assert strict.tolist() == [False, False, False, False, True, True, True]
+    assert ties.tolist() == expected_ties
+    torch.testing.assert_close(tie_aware, torch.tensor(expected_tie_aware))
 
 
 @pytest.mark.parametrize("beta", [0.01, 0.1, 1.0])

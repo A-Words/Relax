@@ -3,6 +3,17 @@
 from argparse import Namespace
 
 
+PREFERENCE_DATA_FIELDS = (
+    "pair_ids",
+    "chosen_tokens",
+    "rejected_tokens",
+    "chosen_loss_masks",
+    "rejected_loss_masks",
+    "chosen_total_lengths",
+    "rejected_total_lengths",
+)
+
+
 def _base_rollout_fields(args: Namespace) -> list[str]:
     fields = [
         "tokens",
@@ -31,15 +42,7 @@ def build_data_fields(args: Namespace, *, consumer: str = "actor") -> list[str]:
     """
     if getattr(args, "loss_type", None) == "sft":
         if getattr(args, "sft_objective", "causal_lm") == "dpo":
-            return [
-                "pair_ids",
-                "chosen_tokens",
-                "rejected_tokens",
-                "chosen_loss_masks",
-                "rejected_loss_masks",
-                "chosen_total_lengths",
-                "rejected_total_lengths",
-            ]
+            return list(PREFERENCE_DATA_FIELDS)
         fields = ["tokens", "total_lengths", "response_lengths", "loss_masks"]
         if getattr(args, "task_type", "causal_lm") == "seq_cls":
             fields.append("classification_labels")

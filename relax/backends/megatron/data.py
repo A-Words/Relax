@@ -25,6 +25,7 @@ from relax.utils.metrics.metric_utils import compute_rollout_step
 from relax.utils.opd.opd_utils import OPD_ROLLOUT_LOG_SKIP_FIELDS
 from relax.utils.timer import Timer
 from relax.utils.training import train_metric_utils
+from relax.utils.training.data_fields import PREFERENCE_DATA_FIELDS
 from relax.utils.training.flops_counter import FlopsCounter
 from relax.utils.training.preference_utils import pack_preference_pair_indices
 from relax.utils.types import RolloutBatch
@@ -805,22 +806,13 @@ def expand_preference_rollout_data(rollout_data: RolloutBatch) -> RolloutBatch:
     """Expand pair rows into adjacent chosen/rejected model sequences."""
     if "preference_pair_costs" in rollout_data:
         return rollout_data
-    required = (
-        "pair_ids",
-        "chosen_tokens",
-        "rejected_tokens",
-        "chosen_loss_masks",
-        "rejected_loss_masks",
-        "chosen_total_lengths",
-        "rejected_total_lengths",
-    )
-    missing = [key for key in required if key not in rollout_data]
+    missing = [key for key in PREFERENCE_DATA_FIELDS if key not in rollout_data]
     if missing:
         raise ValueError(f"preference rollout data is missing fields: {missing}")
     pair_count = len(rollout_data["pair_ids"])
     if pair_count <= 0:
         raise ValueError("preference rollout batch must contain at least one pair")
-    for key in required:
+    for key in PREFERENCE_DATA_FIELDS:
         if len(rollout_data[key]) != pair_count:
             raise ValueError(
                 f"preference field {key!r} is not pair-row aligned: expected {pair_count}, got {len(rollout_data[key])}"
