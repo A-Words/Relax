@@ -4,7 +4,6 @@
 
 import hashlib
 import threading
-from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -258,9 +257,6 @@ class PreferenceStreamingDataset:
         self.max_completion_length = max_completion_length
         self.pair_capacity = pair_capacity or (2 * max_length)
         self.apply_chat_template_kwargs = apply_chat_template_kwargs
-        self._rejection_counts: Counter[str] = Counter()
-        self._rejection_records: list[dict[str, Any]] = []
-        self._rejection_lock = threading.Lock()
         self._validate_unique_pair_ids()
         self._first_error: BaseException | None = None
         self._error_lock = threading.Lock()
@@ -282,19 +278,9 @@ class PreferenceStreamingDataset:
             pair_id = self.reader[index].get(self.pair_id_key)
             if not isinstance(pair_id, str) or not pair_id:
                 message = f"preference row {index} requires a non-empty {self.pair_id_key}"
-                with self._rejection_lock:
-                    self._rejection_counts["schema"] += 1
-                    self._rejection_records.append(
-                        {"source_idx": index, "pair_id": None, "reason_code": "schema", "message": message}
-                    )
                 raise PreferenceDataError("schema", message, source_idx=index)
             if pair_id in seen:
                 message = f"duplicate preference pair ID {pair_id!r} at row {index}"
-                with self._rejection_lock:
-                    self._rejection_counts["schema"] += 1
-                    self._rejection_records.append(
-                        {"source_idx": index, "pair_id": pair_id, "reason_code": "schema", "message": message}
-                    )
                 raise PreferenceDataError("schema", message, source_idx=index, pair_id=pair_id)
             seen.add(pair_id)
 
@@ -363,17 +349,11 @@ class PreferenceStreamingDataset:
                 pass
             reason_code = _classify_preference_error(exc)
             error = PreferenceDataError(reason_code, str(exc), source_idx=idx, pair_id=pair_id)
-            with self._rejection_lock:
-                self._rejection_counts[reason_code] += 1
-                self._rejection_records.append(
-                    {"source_idx": idx, "pair_id": pair_id, "reason_code": reason_code, "message": str(exc)}
-                )
             logger.error(
-                "Rejected preference pair source_idx=%s pair_id=%r reason_code=%s counts=%s",
+                "Rejected preference pair source_idx=%s pair_id=%r reason_code=%s",
                 idx,
                 pair_id,
                 reason_code,
-                dict(self.rejection_counts),
             )
             raise error from exc
 
@@ -438,18 +418,6 @@ class PreferenceStreamingDataset:
             rejected_completion_length=rejected_completion.numel(),
             source_idx=idx,
         )
-
-    @property
-    def rejection_counts(self) -> dict[str, int]:
-        """Return a thread-safe snapshot of classified rejection counts."""
-        with self._rejection_lock:
-            return dict(self._rejection_counts)
-
-    @property
-    def rejection_records(self) -> list[dict[str, Any]]:
-        """Return row IDs and stable reason codes for evidence manifests."""
-        with self._rejection_lock:
-            return [dict(record) for record in self._rejection_records]
 
     def _process_one_safe(self, idx: int) -> ProcessedPreferencePair | None:
         try:

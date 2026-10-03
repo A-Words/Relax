@@ -154,7 +154,8 @@ def test_implicit_ultrafeedback_pair_extracts_strict_common_prefix(tmp_path: Pat
     assert pair.rejected_completion_length == 3
 
 
-def test_rejection_reason_is_classified_counted_and_still_fail_fast(tmp_path: Path):
+@pytest.mark.parametrize("prefetch_max_cached", [0, 2])
+def test_preference_dataset_preserves_error_context(tmp_path: Path, prefetch_max_cached: int):
     path = tmp_path / "identical.jsonl"
     _write_jsonl(
         path,
@@ -167,12 +168,26 @@ def test_rejection_reason_is_classified_counted_and_still_fail_fast(tmp_path: Pa
             }
         ],
     )
-    dataset = _dataset(path)
-    with pytest.raises(PreferenceDataError) as exc_info:
-        dataset.get_processed_pair(0)
-    assert exc_info.value.reason_code == "identical"
-    assert dataset.rejection_counts == {"identical": 1}
-    assert dataset.rejection_records[0]["pair_id"] == "pair-identical"
+    dataset = PreferenceStreamingDataset(
+        path=str(path),
+        tokenizer=_FakeTokenizer(),
+        prefetch_max_cached=prefetch_max_cached,
+        prefetch_chunk_size=1,
+        prefetch_num_workers=1,
+    )
+    try:
+        dataset.shuffle(0)
+        if prefetch_max_cached:
+            assert dataset._prefetch.wait_for(0, timeout=5)
+        with pytest.raises(PreferenceDataError) as exc_info:
+            dataset.get_batch(1)
+        assert exc_info.value.reason_code == "identical"
+        assert exc_info.value.source_idx == 0
+        assert exc_info.value.pair_id == "pair-identical"
+        assert exc_info.value.__cause__ is not None
+        assert "identical" in str(exc_info.value.__cause__)
+    finally:
+        dataset.stop()
 
 
 @pytest.mark.parametrize(
