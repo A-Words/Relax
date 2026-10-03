@@ -581,19 +581,74 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default="causal_lm",
                 help="Offline objective under --loss-type sft. Defaults to the existing causal-LM behavior.",
             )
-            parser.add_argument("--preference-chosen-key", type=str, default="chosen")
-            parser.add_argument("--preference-rejected-key", type=str, default="rejected")
-            parser.add_argument("--preference-pair-id-key", type=str, default="prompt_id")
-            parser.add_argument("--preference-max-length", type=int, default=1024)
-            parser.add_argument("--preference-max-completion-length", type=int, default=512)
-            parser.add_argument("--dpo-beta", type=float, default=0.1)
-            parser.add_argument("--dpo-reference-repository", type=str, default=None)
-            parser.add_argument("--dpo-reference-revision", type=str, default=None)
+            parser.add_argument(
+                "--preference-chosen-key",
+                type=str,
+                default="chosen",
+                help="Dataset column for the chosen response in each preference pair.",
+            )
+            parser.add_argument(
+                "--preference-rejected-key",
+                type=str,
+                default="rejected",
+                help="Dataset column for the rejected response in each preference pair.",
+            )
+            parser.add_argument(
+                "--preference-pair-id-key",
+                type=str,
+                default="prompt_id",
+                help="Dataset column containing a unique string ID for each preference pair.",
+            )
+            parser.add_argument(
+                "--preference-max-length",
+                type=int,
+                default=1024,
+                help=(
+                    "Maximum tokens in each chosen or rejected branch, including the shared prompt and completion. "
+                    "Both branches keep the same prompt suffix. Must not exceed --seq-length."
+                ),
+            )
+            parser.add_argument(
+                "--preference-max-completion-length",
+                type=int,
+                default=512,
+                help=(
+                    "Maximum completion tokens per branch, excluding the prompt. Longer completions keep their "
+                    "first tokens before the shared prompt is trimmed to fit --preference-max-length."
+                ),
+            )
+            parser.add_argument(
+                "--dpo-beta",
+                type=float,
+                default=0.1,
+                help="Scale the policy/reference log-probability margin in the DPO loss. Must be finite and positive.",
+            )
+            parser.add_argument(
+                "--dpo-reference-repository",
+                type=str,
+                default=None,
+                help=(
+                    "Hugging Face repository ID of the frozen DPO reference stored at --hf-checkpoint. "
+                    "Required unless --dpo-reference-free is enabled."
+                ),
+            )
+            parser.add_argument(
+                "--dpo-reference-revision",
+                type=str,
+                default=None,
+                help=(
+                    "Full 40-character commit SHA for --dpo-reference-repository. "
+                    "Required unless --dpo-reference-free is enabled."
+                ),
+            )
             parser.add_argument(
                 "--dpo-reference-free",
                 action=argparse.BooleanOptionalAction,
                 default=False,
-                help="Use explicit reference-free logistic DPO instead of a frozen reference checkpoint.",
+                help=(
+                    "Use reference-free logistic DPO without loading a frozen reference. "
+                    "Disabled by default; reference loading failures remain errors."
+                ),
             )
             parser.add_argument(
                 "--custom-dataset-class",
@@ -1423,7 +1478,9 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                     "The number of prompts in each rollout step. "
                     "The total data returned should be rollout_batch_size * n_samples_per_prompt. "
                     "If omitted but --global-batch-size is set, it is derived as "
-                    "`global_batch_size // n_samples_per_prompt`."
+                    "`global_batch_size // n_samples_per_prompt`. "
+                    "For offline preference training, --global-batch-size controls the number of pairs "
+                    "per optimizer step."
                 ),
             )
             parser.add_argument(
@@ -1434,6 +1491,11 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             # so if you hope to train 1 step for each rollout, the global_bach_size should be set as
             # `rollout_batch_size * n_samples_per_prompt`.
             reset_arg(parser, "--global-batch-size", type=int, default=None)
+            parser._option_string_actions["--global-batch-size"].help = (
+                "Number of training samples per optimizer step across all data-parallel ranks. "
+                "For preference objectives, counts preference pairs; "
+                "one pair contains both chosen and rejected branches."
+            )
             parser.add_argument(
                 "--num-steps-per-rollout",
                 type=int,
@@ -1475,6 +1537,8 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "The maximum number of tokens per GPU for dynamic batch size. "
+                    "For preference objectives, counts both branches of each pair, "
+                    "including the shared prompt twice. This budget can further truncate pairs during preprocessing. "
                     "Note that when enabling context parallel (CP), the max tokens per gpu should be around "
                     "`max_response_len // cp_size` instead of `max_response_len`."
                 ),
