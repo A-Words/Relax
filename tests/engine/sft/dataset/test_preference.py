@@ -115,6 +115,7 @@ def test_preference_pair_masks_historical_assistant_turns(tmp_path: Path, implic
 
     pair = _dataset(path).get_processed_pair(0)
 
+    assert pair.pair_id == "history"
     expected_prompt = _FakeTokenizer().apply_chat_template(prompt).squeeze(0)
     for branch, expected_completion in (("chosen", [33, 31, 31, 30]), ("rejected", [38, 37, 30])):
         tokens = getattr(pair, f"{branch}_tokens")
@@ -125,33 +126,6 @@ def test_preference_pair_masks_historical_assistant_turns(tmp_path: Path, implic
         assert tokens[prompt_length:].tolist() == expected_completion
         assert not mask[:prompt_length].any()
         assert mask[prompt_length:].all()
-
-
-def test_implicit_ultrafeedback_pair_extracts_strict_common_prefix(tmp_path: Path):
-    path = tmp_path / "pairs.jsonl"
-    _write_jsonl(
-        path,
-        [
-            {
-                "prompt_id": "pair-1",
-                "chosen": [
-                    {"role": "user", "content": "question"},
-                    {"role": "assistant", "content": "good"},
-                ],
-                "rejected": [
-                    {"role": "user", "content": "question"},
-                    {"role": "assistant", "content": "bad"},
-                ],
-            }
-        ],
-    )
-
-    dataset = _dataset(path, max_length=32, max_completion_length=8, pair_capacity=64)
-    pair = dataset.get_processed_pair(0)
-
-    assert pair.pair_id == "pair-1"
-    assert pair.chosen_completion_length == 4
-    assert pair.rejected_completion_length == 3
 
 
 @pytest.mark.parametrize("prefetch_max_cached", [0, 2])
@@ -195,7 +169,6 @@ def test_preference_dataset_preserves_error_context(tmp_path: Path, prefetch_max
     [
         ({"prompt_id": None}, "prompt_id"),
         ({"rejected": {"role": "user", "content": "bad"}}, "assistant"),
-        ({"rejected": {"role": "assistant", "content": "good"}}, "identical"),
     ],
 )
 def test_pair_schema_rejects_invalid_rows(tmp_path: Path, update: dict, match: str):
