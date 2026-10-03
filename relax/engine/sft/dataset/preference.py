@@ -487,8 +487,6 @@ def pack_preference_pairs_for_tq(
         "rejected_total_lengths": [pair.rejected_total_length for pair in pairs],
     }
     custom_meta = [{"total_lengths": pair.pair_total_length} for pair in pairs]
-    if len(custom_meta) != len(pairs):
-        raise RuntimeError("preference custom metadata is not row-aligned")
     return batch, custom_meta
 
 

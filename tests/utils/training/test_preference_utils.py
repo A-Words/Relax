@@ -9,7 +9,6 @@ import torch
 import torch.nn.functional as F
 
 from relax.utils.training.preference_utils import (
-    build_causal_lm_labels,
     dpo_pair_loss,
     pack_preference_pair_indices,
     require_tensor_condition,
@@ -30,15 +29,6 @@ def test_tensor_condition_uses_async_assert_without_python_bool_on_cuda(monkeypa
     require_tensor_condition(condition, "finite")
 
     assert calls == [(condition, "finite")]
-
-
-def test_build_causal_lm_labels_uses_next_token_mask():
-    tokens = torch.tensor([10, 11, 12, 13, 14])
-    raw_mask = torch.tensor([0, 0, 1, 1, 1])
-
-    labels = build_causal_lm_labels(tokens, raw_mask)
-
-    assert labels.tolist() == [-100, 12, 13, 14, -100]
 
 
 @pytest.mark.parametrize("beta", [0.01, 0.1, 1.0])

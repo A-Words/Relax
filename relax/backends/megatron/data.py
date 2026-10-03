@@ -869,10 +869,6 @@ def _split_preference_bins_to_count(bins: list[list[int]], target_count: int) ->
     bins = [list(group) for group in bins]
     while len(bins) < target_count:
         candidates = [(len(group), -index, index) for index, group in enumerate(bins) if len(group) > 1]
-        if not candidates:
-            raise RuntimeError(
-                f"cannot split {len(bins)} preference micro-batches to DP-synchronized count {target_count}"
-            )
         _, _, index = max(candidates)
         group = bins[index]
         bins[index] = group[:-1]
@@ -920,17 +916,9 @@ def _get_preference_data_iterator(
     rollout_data["dynamic_global_batch_size"] = step_global_pair_count
     rollout_data[ROLLOUT_MINI_GLOBAL_SAMPLE_COUNTS_KEY] = [step_global_pair_count]
     pair_bins = _split_preference_bins_to_count(pair_bins, max(int(values[2]) for values in control_values))
-    if any(sum(pair_costs[index] for index in group) > capacity for group in pair_bins):
-        raise RuntimeError("preference DP bin synchronization produced an over-capacity micro-batch")
     branch_bins = [
         [branch for pair_index in group for branch in (2 * pair_index, 2 * pair_index + 1)] for group in pair_bins
     ]
-    covered = [index for group in pair_bins for index in group]
-    if sorted(covered) != list(range(len(pair_costs))):
-        raise RuntimeError("preference dynamic batching lost or duplicated a pair")
-    for group in branch_bins:
-        if len(group) % 2 != 0 or any(group[index + 1] != group[index] + 1 for index in range(0, len(group), 2)):
-            raise RuntimeError("preference dynamic batching split a chosen/rejected pair")
     iterator = DataIterator(rollout_data, micro_batch_indices=branch_bins, max_tokens_per_gpu=capacity)
     return [iterator], [len(branch_bins)]
 

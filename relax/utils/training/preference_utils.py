@@ -17,25 +17,10 @@ def require_tensor_condition(condition: torch.Tensor, message: str) -> None:
 
 
 def _validate_same_shape(name: str, *values: torch.Tensor) -> None:
-    if not values:
-        raise ValueError(f"{name} requires at least one tensor")
     expected = values[0].shape
     if any(value.shape != expected for value in values[1:]):
         shapes = [tuple(value.shape) for value in values]
         raise ValueError(f"{name} tensors must have identical shapes, got {shapes}")
-
-
-def build_causal_lm_labels(tokens: torch.Tensor, raw_loss_mask: torch.Tensor) -> torch.Tensor:
-    """Build next-token labels from an unshifted completion-token mask."""
-    if tokens.ndim != 1 or raw_loss_mask.ndim != 1:
-        raise ValueError("tokens and raw_loss_mask must be one-dimensional")
-    if tokens.shape != raw_loss_mask.shape:
-        raise ValueError(f"tokens/raw_loss_mask shape mismatch: {tuple(tokens.shape)} vs {tuple(raw_loss_mask.shape)}")
-    labels = torch.full_like(tokens, -100)
-    if tokens.numel() > 1:
-        supervised = raw_loss_mask[1:].to(dtype=torch.bool)
-        labels[:-1][supervised] = tokens[1:][supervised]
-    return labels
 
 
 def dpo_pair_loss(
@@ -127,16 +112,11 @@ def pack_preference_pair_indices(
             bins.append([index])
             bin_costs.append(cost)
 
-    if sorted(index for group in bins for index in group) != list(range(len(normalized_costs))):
-        raise RuntimeError("preference pair packer lost or duplicated pair indices")
-    if any(sum(normalized_costs[index] for index in group) > capacity for group in bins):
-        raise RuntimeError("preference pair packer produced an over-capacity micro-batch")
     return bins
 
 
 __all__ = [
     "build_preference_pair_indices",
-    "build_causal_lm_labels",
     "dpo_pair_loss",
     "pack_preference_pair_indices",
     "require_tensor_condition",

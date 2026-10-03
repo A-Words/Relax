@@ -60,8 +60,8 @@ def test_preference_iterator_validates_step_global_pair_denominator(monkeypatch)
 
 
 @pytest.mark.parametrize("pair_ids", [[100, 101], [100, 100]])
-@pytest.mark.parametrize("capacity", [4, 8])
-def test_dp2_pair_rows_remain_atomic_with_global_pair_denominator(monkeypatch, pair_ids, capacity):
+@pytest.mark.parametrize(("capacity", "peer_bins"), [(4, 2), (8, 1), (8, 2)])
+def test_dp2_pair_rows_remain_atomic_with_global_pair_denominator(monkeypatch, pair_ids, capacity, peer_bins):
     rows = _pair_rows()
     rows["pair_ids"] = pair_ids
     rows["chosen_tokens"] = [[1, 2], [4, 5]]
@@ -71,18 +71,20 @@ def test_dp2_pair_rows_remain_atomic_with_global_pair_denominator(monkeypatch, p
     monkeypatch.setattr(data_module.mpu, "get_data_parallel_group_gloo", lambda **kwargs: object())
 
     def all_gather_object(output, value, **_kwargs):
-        output[:] = [value, value]
+        output[:] = [value, (value[0], value[1], peer_bins)]
 
     monkeypatch.setattr(data_module.dist, "all_gather_object", all_gather_object)
     args = Namespace(global_batch_size=4, max_tokens_per_gpu=capacity)
     iterators, counts = data_module._get_preference_data_iterator(args, flat, None)
     assert flat["dynamic_global_batch_size"] == 4
-    assert counts == [8 // capacity]
+    assert counts == [peer_bins]
     seen = []
     seen_tokens = []
     for _ in range(counts[0]):
         batch = iterators[0].get_next(["preference_branch_pair_ids", "preference_is_chosen", "tokens"])
         ids = batch["preference_branch_pair_ids"]
+        assert ids
+        assert sum(map(len, batch["tokens"])) <= capacity
         assert ids[::2] == ids[1::2]
         assert batch["preference_is_chosen"] == [True, False] * (len(ids) // 2)
         seen.extend(batch["preference_branch_pair_ids"])
