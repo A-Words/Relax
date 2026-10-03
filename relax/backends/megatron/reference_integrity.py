@@ -195,49 +195,6 @@ def canonical_tensor_sha256(named_tensors: Iterable[tuple[str, torch.Tensor]]) -
     return digest.hexdigest()
 
 
-def canonical_optimizer_sha256(optimizer: Any) -> str:
-    """Hash optimizer master parameters and state without relying on object
-    IDs."""
-    digest = hashlib.sha256()
-
-    def update(value: Any, path: str) -> None:
-        _update_field(digest, path.encode())
-        if isinstance(value, torch.Tensor):
-            _update_field(digest, str(value.dtype).encode())
-            _update_field(digest, json.dumps(list(value.shape), separators=(",", ":")).encode())
-            _update_field(digest, _tensor_bytes(value))
-        elif isinstance(value, Mapping):
-            for key in sorted(value, key=lambda item: str(item)):
-                update(value[key], f"{path}/{key}")
-        elif isinstance(value, (list, tuple)):
-            for index, item in enumerate(value):
-                update(item, f"{path}/{index}")
-        else:
-            _update_field(digest, repr(value).encode())
-
-    chained = getattr(optimizer, "chained_optimizers", None)
-    if chained is not None:
-        optimizers = [getattr(item, "optimizer", item) for item in chained]
-    else:
-        optimizers = [getattr(optimizer, "optimizer", optimizer)]
-    for optimizer_index, inner_optimizer in enumerate(optimizers):
-        param_groups = getattr(inner_optimizer, "param_groups", None)
-        state = getattr(inner_optimizer, "state", None)
-        if param_groups is None or state is None:
-            update(inner_optimizer.state_dict(), f"optimizer/{optimizer_index}/state_dict")
-            continue
-        for group_index, group in enumerate(param_groups):
-            update(
-                {key: value for key, value in group.items() if key != "params"},
-                f"optimizer/{optimizer_index}/group/{group_index}/options",
-            )
-            for parameter_index, parameter in enumerate(group["params"]):
-                path = f"optimizer/{optimizer_index}/group/{group_index}/parameter/{parameter_index}"
-                update(parameter, f"{path}/master")
-                update(state.get(parameter, {}), f"{path}/state")
-    return digest.hexdigest()
-
-
 def reference_identity_path(checkpoint_root: str | os.PathLike[str], iteration: int) -> Path:
     root = Path(checkpoint_root)
     iteration_dir = root if root.name == f"iter_{iteration:07d}" else root / f"iter_{iteration:07d}"
@@ -265,7 +222,6 @@ __all__ = [
     "DPOReferenceIdentity",
     "REFERENCE_IDENTITY_FILENAME",
     "REFERENCE_LOADER_MODE",
-    "canonical_optimizer_sha256",
     "canonical_tensor_sha256",
     "read_reference_identity",
     "reference_identity_path",

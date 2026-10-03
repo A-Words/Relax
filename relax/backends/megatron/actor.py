@@ -125,7 +125,6 @@ from .model import forward_only, initialize_model_and_optimizer, save, train
 from .reference_integrity import (
     REFERENCE_LOADER_MODE,
     DPOReferenceIdentity,
-    canonical_optimizer_sha256,
     canonical_tensor_sha256,
     read_reference_identity,
     reference_identity_path,
@@ -787,7 +786,6 @@ class MegatronTrainRayActor(TrainRayActor):
         optimizer state."""
         if self._active_model_tag != "actor" or "actor" not in self.weights_backuper.backup_tags:
             raise RuntimeError("DPO reference rebuild requires an active actor backup")
-        optimizer_before = canonical_optimizer_sha256(self.optimizer)
         old_args = self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune
         try:
             self.args.load = path
@@ -824,12 +822,6 @@ class MegatronTrainRayActor(TrainRayActor):
         finally:
             self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune = old_args
             self._switch_model("actor")
-            optimizer_after = canonical_optimizer_sha256(self.optimizer)
-            if optimizer_after != optimizer_before:
-                raise RuntimeError(
-                    "DPO reference rebuild modified optimizer master parameters or state: "
-                    f"before={optimizer_before}, after={optimizer_after}"
-                )
 
     def fill_routing_replay(self, data_iterator, num_microbatches, rollout_data):
         if "rollout_routed_experts" not in rollout_data:

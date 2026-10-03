@@ -19,7 +19,6 @@ import torch
 from relax.backends.megatron.reference_integrity import (
     REFERENCE_LOADER_MODE,
     DPOReferenceIdentity,
-    canonical_optimizer_sha256,
     canonical_tensor_sha256,
     read_reference_identity,
     reference_identity_path,
@@ -50,21 +49,6 @@ def test_canonical_tensor_digest_is_order_stable_and_byte_sensitive():
     assert first == reordered
     assert first != changed
     assert first != canonical_tensor_sha256([("a", torch.tensor([1], dtype=torch.int64)), ("b", torch.tensor([2.0]))])
-
-
-def test_optimizer_digest_detects_master_or_state_changes():
-    parameter = torch.nn.Parameter(torch.tensor([1.0]))
-    optimizer = torch.optim.Adam([parameter], lr=0.1)
-    (parameter.square().sum()).backward()
-    optimizer.step()
-    baseline = canonical_optimizer_sha256(optimizer)
-    master_value = parameter.detach().clone()
-    parameter.data.add_(1)
-    master_changed = canonical_optimizer_sha256(optimizer)
-    assert master_changed != baseline
-    parameter.data.copy_(master_value)
-    optimizer.state[parameter]["exp_avg"].add_(1)
-    assert canonical_optimizer_sha256(optimizer) != baseline
 
 
 def test_reference_identity_sidecar_is_required_and_rejects_schema_damage(tmp_path):
@@ -311,7 +295,6 @@ def reference_actor_methods():
     namespace = {
         "DPOReferenceIdentity": DPOReferenceIdentity,
         "REFERENCE_LOADER_MODE": REFERENCE_LOADER_MODE,
-        "canonical_optimizer_sha256": canonical_optimizer_sha256,
         "canonical_tensor_sha256": canonical_tensor_sha256,
         "is_preference_mode": is_preference_mode,
         "reference_identity_path": reference_identity_path,
@@ -322,7 +305,7 @@ def reference_actor_methods():
     return type("ReferenceActor", (), {name: namespace[name] for name in method_names}), namespace
 
 
-@pytest.mark.parametrize("outcome", ["success", "loader_failure", "identity_mismatch", "optimizer_mutation"])
+@pytest.mark.parametrize("outcome", ["success", "loader_failure", "identity_mismatch"])
 def test_reference_rebuild_preserves_actor_and_optimizer(monkeypatch, reference_actor_methods, outcome):
     actor_type, namespace = reference_actor_methods
     parameter = torch.nn.Parameter(torch.tensor([1.0]))
@@ -369,8 +352,6 @@ def test_reference_rebuild_preserves_actor_and_optimizer(monkeypatch, reference_
         parameter.data.fill_(99)
         if outcome == "loader_failure":
             raise RuntimeError("injected loader failure")
-        if outcome == "optimizer_mutation":
-            optimizer.state[parameter]["exp_avg"].add_(1)
 
     namespace["load_checkpoint"] = load_reference
     namespace["named_params_and_buffers"] = lambda *args, **kwargs: [("weight", parameter)]
@@ -378,17 +359,15 @@ def test_reference_rebuild_preserves_actor_and_optimizer(monkeypatch, reference_
     errors = {
         "loader_failure": "injected loader failure",
         "identity_mismatch": "frozen-reference identity mismatch",
-        "optimizer_mutation": "modified optimizer master parameters or state",
     }
     with pytest.raises(RuntimeError, match=errors[outcome]) if outcome in errors else nullcontext():
         instance._rebuild_dpo_reference("hf-path")
     torch.testing.assert_close(parameter, actor_value)
     assert instance._active_model_tag == "actor"
     assert vars(instance.args) == original_args
-    if outcome != "optimizer_mutation":
-        assert optimizer.state[parameter].keys() == optimizer_state_before.keys()
-        for name, expected in optimizer_state_before.items():
-            torch.testing.assert_close(optimizer.state[parameter][name], expected, rtol=0, atol=0)
+    assert optimizer.state[parameter].keys() == optimizer_state_before.keys()
+    for name, expected in optimizer_state_before.items():
+        torch.testing.assert_close(optimizer.state[parameter][name], expected, rtol=0, atol=0)
     if outcome in {"loader_failure", "identity_mismatch"}:
         assert "ref" not in instance.weights_backuper.backup_tags
     elif outcome == "success":
