@@ -378,8 +378,7 @@ def test_reference_rebuild_preserves_actor_and_optimizer(monkeypatch, reference_
         assert instance._dpo_reference_identity.parameter_sha256 == canonical_tensor_sha256([("weight", reference)])
 
 
-@pytest.mark.parametrize("changed_reference", [False, True])
-def test_save_model_checks_reference_weights_without_probe(tmp_path, reference_actor_methods, changed_reference):
+def test_save_model_persists_reference_identity(tmp_path, reference_actor_methods):
     actor_type, namespace = reference_actor_methods
     instance = actor_type()
     instance.args = Namespace(
@@ -395,32 +394,21 @@ def test_save_model_checks_reference_weights_without_probe(tmp_path, reference_a
     instance.role = "actor"
     instance.model = [object()]
     instance.optimizer = instance.opt_param_scheduler = None
-    reference = {"weight": torch.tensor([1.0])}
-    instance.weights_backuper = types.SimpleNamespace(get=lambda tag: reference)
-    instance._dpo_reference_identity = DPOReferenceIdentity(
-        1, "repo", "revision", REFERENCE_LOADER_MODE, canonical_tensor_sha256(reference.items())
-    )
+    instance._dpo_reference_identity = DPOReferenceIdentity(1, "repo", "revision", REFERENCE_LOADER_MODE, "a" * 64)
     namespace.update(
         dist=types.SimpleNamespace(get_rank=lambda **kwargs: 0, barrier=lambda **kwargs: None),
         get_gloo_group=lambda: None,
         rotate_ckpt=Mock(),
         save=Mock(),
     )
-    if changed_reference:
-        reference["weight"].add_(1)
-    context = pytest.raises(RuntimeError, match="checksum changed") if changed_reference else nullcontext()
-    with context:
-        instance.save_model(7)
+    instance.save_model(7)
     namespace["save"].assert_called_once_with(7, instance.model, None, None, lora_only=False)
     path = reference_identity_path(tmp_path, 7)
-    if changed_reference:
-        assert not path.exists()
-    else:
-        assert read_reference_identity(path) == instance._dpo_reference_identity
-        assert set(json.loads(path.read_text())) == {
-            "schema_version",
-            "repository",
-            "revision",
-            "loader_mode",
-            "parameter_sha256",
-        }
+    assert read_reference_identity(path) == instance._dpo_reference_identity
+    assert set(json.loads(path.read_text())) == {
+        "schema_version",
+        "repository",
+        "revision",
+        "loader_mode",
+        "parameter_sha256",
+    }

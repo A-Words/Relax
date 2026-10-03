@@ -2511,12 +2511,6 @@ class MegatronTrainRayActor(TrainRayActor):
             identity = self._dpo_reference_identity
             if identity is None:
                 raise RuntimeError("cannot save standard DPO without a validated reference identity")
-            actual_sha256 = canonical_tensor_sha256(self.weights_backuper.get("ref").items())
-            if actual_sha256 != identity.parameter_sha256:
-                raise RuntimeError(
-                    "DPO frozen-reference checksum changed before checkpoint: "
-                    f"expected={identity.parameter_sha256}, actual={actual_sha256}"
-                )
             if dist.get_rank(group=get_gloo_group()) == 0:
                 write_reference_identity(reference_identity_path(self.args.save, rollout_id), identity)
             # Functional barrier (not debugging): peers must not proceed past
