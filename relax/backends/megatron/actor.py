@@ -428,7 +428,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.args.lr = self.args.critic_lr
             self.args.lr_warmup_iters = self.args.critic_lr_warmup_iters
 
-        resumed_from_megatron = is_megatron_checkpoint(args.load)
+        resumed_from_megatron = args.load is not None and is_megatron_checkpoint(args.load)
         self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
             args, role
         )

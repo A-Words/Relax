@@ -600,9 +600,7 @@ def _format_opt_param_scheduler_error(args, original: AssertionError) -> str:
     )
 
 
-def is_megatron_checkpoint(path: str | Path | None) -> bool:
-    if path is None:
-        return False
+def is_megatron_checkpoint(path: str | Path) -> bool:
     return (Path(path) / "latest_checkpointed_iteration.txt").is_file() or bool(
         re.fullmatch(r"iter_\d{7}", Path(path).name)
     )
