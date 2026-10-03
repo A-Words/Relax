@@ -79,8 +79,6 @@ Run the same script with the same paths and training settings. It loads the chec
 
 Keep the full checkpoint directory, including `relax_dpo_reference.json` inside each saved iteration. DPO uses this file to check that the reference model has not changed.
 
-The current resume check also compares reference model outputs byte for byte. Use the original GPU model and software environment. An environment change can cause this check to fail even when the weights are unchanged.
-
 ## Read the training metrics
 
 DPO records these metrics under `train/dpo/`:

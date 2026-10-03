@@ -79,8 +79,6 @@ NUM_GPUS=1 bash scripts/training/dpo/run-qwen3-0.6B-ultrafeedback-1xgpu.sh
 
 保留完整的检查点目录，包括每个已保存迭代目录中的 `relax_dpo_reference.json`。DPO 通过这个文件检查参考模型是否发生变化。
 
-当前恢复检查还会逐字节比较参考模型的输出。请使用原来的 GPU 型号和软件环境。即使权重没有变化，更换环境也可能导致这项检查失败。
-
 ## 查看训练指标
 
 DPO 在 `train/dpo/` 下记录以下指标：

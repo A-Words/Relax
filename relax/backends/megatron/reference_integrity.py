@@ -7,7 +7,7 @@ import json
 import math
 import os
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -156,8 +156,6 @@ class DPOReferenceIdentity:
     revision: str
     loader_mode: str
     parameter_sha256: str
-    probe_sha256: str | None
-    probe_manifest: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "DPOReferenceIdentity":
@@ -167,8 +165,6 @@ class DPOReferenceIdentity:
             revision=str(value["revision"]),
             loader_mode=str(value["loader_mode"]),
             parameter_sha256=str(value["parameter_sha256"]),
-            probe_sha256=None if value.get("probe_sha256") is None else str(value["probe_sha256"]),
-            probe_manifest=None if value.get("probe_manifest") is None else dict(value["probe_manifest"]),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -242,33 +238,6 @@ def canonical_optimizer_sha256(optimizer: Any) -> str:
     return digest.hexdigest()
 
 
-def reference_probe_sha256(
-    pair_ids: Sequence[int],
-    branch_is_chosen: Sequence[bool],
-    tokens: Sequence[Sequence[int] | torch.Tensor],
-    loss_masks: Sequence[Sequence[int] | torch.Tensor],
-    ref_log_probs: Sequence[Sequence[float] | torch.Tensor],
-) -> str:
-    """Hash the exact completion-only frozen-reference probe output."""
-    size = len(pair_ids)
-    if any(len(values) != size for values in (branch_is_chosen, tokens, loss_masks, ref_log_probs)):
-        raise ValueError("reference probe fields must be branch aligned")
-    digest = hashlib.sha256()
-    for index in range(size):
-        _update_field(digest, str(int(pair_ids[index])).encode())
-        _update_field(digest, b"chosen" if bool(branch_is_chosen[index]) else b"rejected")
-        token_tensor = torch.as_tensor(tokens[index], dtype=torch.int64)
-        mask_tensor = torch.as_tensor(loss_masks[index], dtype=torch.bool)
-        logp_tensor = torch.as_tensor(ref_log_probs[index], dtype=torch.float32)
-        if logp_tensor.shape != mask_tensor.shape:
-            raise ValueError("reference probe log-probability/mask shape mismatch")
-        _update_field(digest, _tensor_bytes(token_tensor))
-        _update_field(digest, _tensor_bytes(mask_tensor))
-        masked_log_probs = logp_tensor * mask_tensor.to(device=logp_tensor.device, dtype=torch.float32)
-        _update_field(digest, _tensor_bytes(masked_log_probs))
-    return digest.hexdigest()
-
-
 def reference_identity_path(checkpoint_root: str | os.PathLike[str], iteration: int) -> Path:
     root = Path(checkpoint_root)
     iteration_dir = root if root.name == f"iter_{iteration:07d}" else root / f"iter_{iteration:07d}"
@@ -300,7 +269,6 @@ __all__ = [
     "canonical_tensor_sha256",
     "read_reference_identity",
     "reference_identity_path",
-    "reference_probe_sha256",
     "resolve_dpo_reference_checkpoint",
     "write_reference_identity",
 ]

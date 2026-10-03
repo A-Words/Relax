@@ -1,26 +1,33 @@
 # Copyright (c) 2026 Relax Authors. All Rights Reserved.
 
-"""Frozen-reference checksum, probe, optimizer and sidecar tests."""
+"""Frozen-reference checksum, optimizer and sidecar tests."""
 
+import ast
 import hashlib
 import json
 import os
 import sys
 import types
 from argparse import Namespace
+from contextlib import nullcontext
+from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import torch
 
 from relax.backends.megatron.reference_integrity import (
+    REFERENCE_LOADER_MODE,
     DPOReferenceIdentity,
     canonical_optimizer_sha256,
     canonical_tensor_sha256,
     read_reference_identity,
-    reference_probe_sha256,
+    reference_identity_path,
     resolve_dpo_reference_checkpoint,
     write_reference_identity,
 )
+from relax.engine.sft.runtime import is_preference_mode
+from relax.utils.training import tensor_backper
 
 
 def test_megatron_resume_detection_ignores_fresh_output_directory(tmp_path):
@@ -60,25 +67,11 @@ def test_optimizer_digest_detects_master_or_state_changes():
     assert canonical_optimizer_sha256(optimizer) != baseline
 
 
-def test_probe_digest_covers_identity_tokens_masks_and_fp32_logprobs():
-    args = ([1, 1], [True, False], [[1, 2], [1, 3]], [[0, 1], [0, 1]])
-    baseline = reference_probe_sha256(*args, [[0.0, -1.0], [0.0, -2.0]])
-    assert baseline != reference_probe_sha256(*args, [[0.0, -1.0], [0.0, -2.1]])
-    assert baseline != reference_probe_sha256([2, 2], *args[1:], [[0.0, -1.0], [0.0, -2.0]])
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for cross-device probe coverage")
-def test_probe_digest_accepts_gpu_logprobs_with_cpu_manifest():
-    cpu_digest = reference_probe_sha256([1], [True], [[1, 2]], [[0, 1]], [[0.0, -1.0]])
-    gpu_digest = reference_probe_sha256([1], [True], [[1, 2]], [[0, 1]], [torch.tensor([0.0, -1.0], device="cuda")])
-    assert gpu_digest == cpu_digest
-
-
 def test_reference_identity_sidecar_is_required_and_rejects_schema_damage(tmp_path):
     path = tmp_path / "relax_dpo_reference.json"
     with pytest.raises(FileNotFoundError):
         read_reference_identity(path)
-    identity = DPOReferenceIdentity(1, "repo", "revision", "loader", "a" * 64, "b" * 64)
+    identity = DPOReferenceIdentity(1, "repo", "revision", "loader", "a" * 64)
     write_reference_identity(path, identity)
     assert read_reference_identity(path) == identity
     payload = identity.to_dict()
@@ -86,6 +79,26 @@ def test_reference_identity_sidecar_is_required_and_rejects_schema_damage(tmp_pa
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="unsupported"):
         read_reference_identity(path)
+
+
+def test_reference_identity_reads_legacy_probe_fields_and_omits_them_on_write(tmp_path):
+    path = tmp_path / "relax_dpo_reference.json"
+    payload = {
+        "schema_version": 1,
+        "repository": "repo",
+        "revision": "revision",
+        "loader_mode": "loader",
+        "parameter_sha256": "a" * 64,
+        "probe_sha256": "b" * 64,
+        "probe_manifest": {"tokens": [[1, 2], [1, 3]], "loss_masks": [[0, 1], [0, 1]]},
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    identity = read_reference_identity(path)
+    assert identity == DPOReferenceIdentity(1, "repo", "revision", "loader", "a" * 64)
+    write_reference_identity(path, identity)
+    assert json.loads(path.read_text()) == {
+        key: value for key, value in payload.items() if key not in {"probe_sha256", "probe_manifest"}
+    }
 
 
 def _write_local_download_metadata(checkpoint, filename, revision):
@@ -278,100 +291,50 @@ def test_resolve_dpo_reference_checkpoint_rejects_missing_indexed_shard_and_meta
         resolve_dpo_reference_checkpoint("org/model", revision, str(checkpoint))
 
 
-def test_reference_probe_selects_first_occurrence_of_repeated_pair():
-    try:
-        from relax.backends.megatron import actor as actor_module
-    except Exception as exc:
-        pytest.skip(f"Megatron actor unavailable: {exc}")
-
-    instance = object.__new__(actor_module.MegatronTrainRayActor)
-    instance._expected_dpo_reference_identity = None
-    instance._dpo_reference_identity = DPOReferenceIdentity(1, "repo", "revision", "loader", "a" * 64, None, None)
-    instance._compute_dpo_reference_probe = lambda manifest: "b" * 64
-    instance._validate_dpo_reference_probe(
-        {
-            "preference_branch_pair_ids": [7, 7, 8, 8, 7, 7],
-            "preference_is_chosen": [True, False] * 3,
-            "tokens": [[1, 2], [1, 3], [4, 5], [4, 6], [1, 2], [1, 3]],
-            "loss_masks": [[False, True]] * 6,
-            "total_lengths": [2] * 6,
-            "response_lengths": [1] * 6,
-        }
-    )
-    manifest = instance._dpo_reference_identity.probe_manifest
-    assert manifest["pair_ids"] == [7, 7]
-    assert manifest["branch_is_chosen"] == [True, False]
-    assert manifest["tokens"] == [[1, 2], [1, 3]]
-    assert len(manifest["loss_masks"]) == len(manifest["total_lengths"]) == len(manifest["response_lengths"]) == 2
-    assert instance._dpo_reference_identity.probe_sha256 == "b" * 64
-
-
-def test_resume_probe_materializes_manifest_lists_as_tensors(monkeypatch):
-    try:
-        from relax.backends.megatron import actor as actor_module
-    except Exception as exc:
-        pytest.skip(f"Megatron actor unavailable: {exc}")
-
-    instance = object.__new__(actor_module.MegatronTrainRayActor)
-    instance.args = Namespace()
-    instance.model = [object()]
-    instance._dpo_reference_probe_verified = False
-    instance._expected_dpo_reference_identity = DPOReferenceIdentity(
-        1,
-        "repo",
-        "revision",
-        "loader",
-        "a" * 64,
-        "b" * 64,
-        {
-            "pair_ids": [1, 1],
-            "branch_is_chosen": [True, False],
-            "tokens": [[1, 2], [1, 3]],
-            "loss_masks": [[False, True], [False, True]],
-            "total_lengths": [2, 2],
-            "response_lengths": [1, 1],
-        },
-    )
-
-    def inspect_probe_data(_args, _model, probe_data):
-        assert all(torch.is_tensor(value) and value.dtype == torch.long for value in probe_data["tokens"])
-        assert all(torch.is_tensor(value) and value.dtype == torch.bool for value in probe_data["loss_masks"])
-        raise RuntimeError("probe inspected")
-
-    monkeypatch.setattr(actor_module, "get_data_iterator", inspect_probe_data)
-    monkeypatch.setattr(actor_module.mpu, "get_data_parallel_world_size", lambda **_kwargs: 1)
-    monkeypatch.setattr(actor_module.device_utils, "make_current_torch_device", lambda: torch.device("cpu"))
-    with pytest.raises(RuntimeError, match="probe inspected"):
-        instance._replay_dpo_reference_probe()
+@pytest.fixture
+def reference_actor_methods():
+    """Load the real lifecycle methods without importing the GPU actor
+    stack."""
+    source = Path(__file__).resolve().parents[3] / "relax/backends/megatron/actor.py"
+    tree = ast.parse(source.read_text())
+    actor = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "MegatronTrainRayActor")
+    method_names = {
+        "_switch_model",
+        "_is_standard_dpo",
+        "_assert_dpo_reference_identity",
+        "_rebuild_dpo_reference",
+        "save_model",
+    }
+    methods = [node for node in actor.body if isinstance(node, ast.FunctionDef) and node.name in method_names]
+    for method in methods:
+        method.decorator_list = []
+    namespace = {
+        "DPOReferenceIdentity": DPOReferenceIdentity,
+        "REFERENCE_LOADER_MODE": REFERENCE_LOADER_MODE,
+        "canonical_optimizer_sha256": canonical_optimizer_sha256,
+        "canonical_tensor_sha256": canonical_tensor_sha256,
+        "is_preference_mode": is_preference_mode,
+        "reference_identity_path": reference_identity_path,
+        "write_reference_identity": write_reference_identity,
+        "device_utils": types.SimpleNamespace(maybe_backend_process_on_model_switch=lambda: None),
+    }
+    exec(compile(ast.Module(body=methods, type_ignores=[]), str(source), "exec"), namespace)
+    return type("ReferenceActor", (), {name: namespace[name] for name in method_names}), namespace
 
 
-def test_loader_half_write_failure_restores_actor_and_keeps_optimizer(monkeypatch):
-    try:
-        from relax.backends.megatron import actor as actor_module
-    except Exception as exc:
-        pytest.skip(f"Megatron actor unavailable: {exc}")
-
+@pytest.mark.parametrize("outcome", ["success", "loader_failure", "identity_mismatch", "optimizer_mutation"])
+def test_reference_rebuild_preserves_actor_and_optimizer(monkeypatch, reference_actor_methods, outcome):
+    actor_type, namespace = reference_actor_methods
     parameter = torch.nn.Parameter(torch.tensor([1.0]))
     optimizer = torch.optim.Adam([parameter], lr=0.1)
+    parameter.square().sum().backward()
+    optimizer.step()
+    actor_value = parameter.detach().clone()
+    monkeypatch.setattr(tensor_backper, "_PIN_MEMORY", False)
+    monkeypatch.setattr(tensor_backper, "_NON_BLOCKING", False)
+    monkeypatch.setattr(tensor_backper.device_module, "synchronize", lambda: None)
 
-    class _Backuper:
-        def __init__(self):
-            self.values = {"actor": {"weight": parameter.detach().clone()}}
-
-        @property
-        def backup_tags(self):
-            return list(self.values)
-
-        def restore(self, tag):
-            parameter.data.copy_(self.values[tag]["weight"])
-
-        def backup(self, tag):
-            self.values[tag] = {"weight": parameter.detach().clone()}
-
-        def get(self, tag):
-            return self.values[tag]
-
-    instance = object.__new__(actor_module.MegatronTrainRayActor)
+    instance = actor_type()
     instance.args = Namespace(
         load="checkpoint",
         no_load_optim=False,
@@ -381,22 +344,104 @@ def test_loader_half_write_failure_restores_actor_and_keeps_optimizer(monkeypatc
         dpo_reference_repository="repo",
         dpo_reference_revision="revision",
     )
+    original_args = vars(instance.args).copy()
     instance.model = [object()]
     instance.optimizer = optimizer
-    instance.weights_backuper = _Backuper()
+    instance.weights_backuper = tensor_backper.TensorBackuper.create(lambda: [("weight", parameter)], single_tag=None)
+    instance.weights_backuper.backup("actor")
     instance._active_model_tag = "actor"
     instance._expected_dpo_reference_identity = None
-    monkeypatch.setattr(actor_module.device_utils, "maybe_backend_process_on_model_switch", lambda: None)
+    if outcome == "identity_mismatch":
+        instance._expected_dpo_reference_identity = DPOReferenceIdentity(
+            1, "repo", "revision", REFERENCE_LOADER_MODE, "a" * 64
+        )
+    instance._assert_dp_reference_digest_equal = Mock()
 
-    def fail_after_half_write(*args, **kwargs):
+    def load_reference(model, loaded_optimizer, scheduler, **kwargs):
+        assert model is instance.model
+        assert loaded_optimizer is scheduler is None
+        assert (
+            instance.args.load,
+            instance.args.no_load_optim,
+            instance.args.no_load_rng,
+            instance.args.finetune,
+        ) == ("hf-path", True, True, True)
         parameter.data.fill_(99)
-        raise RuntimeError("injected loader failure")
+        if outcome == "loader_failure":
+            raise RuntimeError("injected loader failure")
+        if outcome == "optimizer_mutation":
+            optimizer.state[parameter]["exp_avg"].add_(1)
 
-    monkeypatch.setattr(actor_module, "load_checkpoint", fail_after_half_write)
-    before = canonical_optimizer_sha256(optimizer)
-    with pytest.raises(RuntimeError, match="injected loader failure"):
+    namespace["load_checkpoint"] = load_reference
+    namespace["named_params_and_buffers"] = lambda *args, **kwargs: [("weight", parameter)]
+    optimizer_state_before = {name: value.clone() for name, value in optimizer.state[parameter].items()}
+    errors = {
+        "loader_failure": "injected loader failure",
+        "identity_mismatch": "frozen-reference identity mismatch",
+        "optimizer_mutation": "modified optimizer master parameters or state",
+    }
+    with pytest.raises(RuntimeError, match=errors[outcome]) if outcome in errors else nullcontext():
         instance._rebuild_dpo_reference("hf-path")
-    assert parameter.item() == 1.0
+    torch.testing.assert_close(parameter, actor_value)
     assert instance._active_model_tag == "actor"
-    assert "ref" not in instance.weights_backuper.backup_tags
-    assert canonical_optimizer_sha256(optimizer) == before
+    assert vars(instance.args) == original_args
+    if outcome != "optimizer_mutation":
+        assert optimizer.state[parameter].keys() == optimizer_state_before.keys()
+        for name, expected in optimizer_state_before.items():
+            torch.testing.assert_close(optimizer.state[parameter][name], expected, rtol=0, atol=0)
+    if outcome in {"loader_failure", "identity_mismatch"}:
+        assert "ref" not in instance.weights_backuper.backup_tags
+    elif outcome == "success":
+        reference = instance.weights_backuper.get("ref")["weight"]
+        torch.testing.assert_close(reference, torch.tensor([99.0]))
+        parameter.data.add_(1)
+        torch.testing.assert_close(reference, torch.tensor([99.0]))
+        assert instance._dpo_reference_identity.parameter_sha256 == canonical_tensor_sha256([("weight", reference)])
+
+
+@pytest.mark.parametrize("changed_reference", [False, True])
+def test_save_model_checks_reference_weights_without_probe(tmp_path, reference_actor_methods, changed_reference):
+    actor_type, namespace = reference_actor_methods
+    instance = actor_type()
+    instance.args = Namespace(
+        loss_type="sft",
+        sft_objective="dpo",
+        dpo_reference_free=False,
+        debug_rollout_only=False,
+        offload_train=False,
+        async_save=False,
+        save=str(tmp_path),
+        save_hf=None,
+    )
+    instance.role = "actor"
+    instance.model = [object()]
+    instance.optimizer = instance.opt_param_scheduler = None
+    reference = {"weight": torch.tensor([1.0])}
+    instance.weights_backuper = types.SimpleNamespace(get=lambda tag: reference)
+    instance._dpo_reference_identity = DPOReferenceIdentity(
+        1, "repo", "revision", REFERENCE_LOADER_MODE, canonical_tensor_sha256(reference.items())
+    )
+    namespace.update(
+        dist=types.SimpleNamespace(get_rank=lambda **kwargs: 0, barrier=lambda **kwargs: None),
+        get_gloo_group=lambda: None,
+        rotate_ckpt=Mock(),
+        save=Mock(),
+    )
+    if changed_reference:
+        reference["weight"].add_(1)
+    context = pytest.raises(RuntimeError, match="checksum changed") if changed_reference else nullcontext()
+    with context:
+        instance.save_model(7)
+    namespace["save"].assert_called_once_with(7, instance.model, None, None, lora_only=False)
+    path = reference_identity_path(tmp_path, 7)
+    if changed_reference:
+        assert not path.exists()
+    else:
+        assert read_reference_identity(path) == instance._dpo_reference_identity
+        assert set(json.loads(path.read_text())) == {
+            "schema_version",
+            "repository",
+            "revision",
+            "loader_mode",
+            "parameter_sha256",
+        }
