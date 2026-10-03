@@ -505,8 +505,10 @@ def pack_preference_pairs_for_tq(
     encoded_pair_ids = [
         int.from_bytes(hashlib.sha256(pair.pair_id.encode()).digest()[:8], "big") >> 1 for pair in pairs
     ]
-    if len(set(encoded_pair_ids)) != len(encoded_pair_ids):
-        raise ValueError("preference pair ID hash collision within batch")
+    source_pair_ids: dict[int, str] = {}
+    for pair, encoded_id in zip(pairs, encoded_pair_ids, strict=True):
+        if source_pair_ids.setdefault(encoded_id, pair.pair_id) != pair.pair_id:
+            raise ValueError("preference pair ID hash collision within batch")
     batch: dict[str, list[Any]] = {
         "pair_ids": encoded_pair_ids,
         "chosen_tokens": [pair.chosen_tokens.tolist() for pair in pairs],
