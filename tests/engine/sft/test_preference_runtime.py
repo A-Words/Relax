@@ -2,17 +2,18 @@
 
 """Fail-fast validation for offline preference objectives."""
 
+import json
 from argparse import Namespace
 
 import pytest
 
+from relax.engine.sft.bootstrap import resolve_sft_algo_key, resolve_sft_num_rollout, validate_sft_resource
 from relax.engine.sft.runtime import is_preference_mode, validate_preference_args
 
 
 def _args(**overrides) -> Namespace:
     values = {
-        "loss_type": "sft",
-        "sft_objective": "dpo",
+        "loss_type": "dpo",
         "custom_dataset_class_path": None,
         "multimodal_keys": None,
         "n_samples_per_prompt": 1,
@@ -50,11 +51,11 @@ def _args(**overrides) -> Namespace:
     return Namespace(**values)
 
 
-def test_preference_mode_is_nested_under_sft():
+def test_preference_mode_uses_loss_type():
     assert is_preference_mode(_args())
     assert not is_preference_mode(_args(loss_type="policy_loss"))
-    assert not is_preference_mode(_args(sft_objective="causal_lm"))
-    assert not is_preference_mode(_args(sft_objective="reward_model"))
+    assert not is_preference_mode(_args(loss_type="sft"))
+    assert not is_preference_mode(_args(loss_type="rm"))
 
 
 @pytest.mark.parametrize(
@@ -85,6 +86,38 @@ def test_preference_mode_is_nested_under_sft():
 def test_preference_validation_rejects_unsupported_configs(overrides: dict, match: str):
     with pytest.raises(ValueError, match=match):
         validate_preference_args(_args(**overrides))
+
+
+def test_preference_bootstrap_resolves_pair_steps_and_roles(tmp_path):
+    path = tmp_path / "pairs.jsonl"
+    rows = [
+        {
+            "pair_id": f"pair-{index}",
+            "prompt": [{"role": "user", "content": "Question"}],
+            "chosen": {"role": "assistant", "content": "Chosen"},
+            "rejected": {"role": "assistant", "content": "Rejected"},
+        }
+        for index in range(4)
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    config = _args(
+        prompt_data=str(path),
+        preference_pair_id_key="pair_id",
+        resource={"sft": [1, 0], "actor": [1, 1]},
+        rollout_batch_size=2,
+        num_epoch=3,
+        num_rollout=None,
+    )
+
+    assert resolve_sft_algo_key(config) == "sft"
+    validate_sft_resource(config)
+    resolve_sft_num_rollout(config)
+    assert config.num_rollout_per_epoch == 2
+    assert config.num_rollout == 6
+
+    config.resource = {"actor": [1, 1]}
+    with pytest.raises(ValueError, match="missing required role 'sft'"):
+        validate_sft_resource(config)
 
 
 def test_reference_free_dpo_does_not_require_ref_update_constraint():

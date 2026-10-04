@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Relax Authors. All Rights Reserved.
 
-"""Mode predicates and naming helpers shared across the SFT path.
+"""Mode predicates and naming helpers shared across offline training.
 
 These are the bits previously duplicated as ``_sft_*`` private functions in
 ``backends/megatron/actor.py`` and ``components/actor.py``. Centralising them
@@ -59,22 +59,17 @@ def resolve_sft_split_indices(
     return train_indices, eval_indices
 
 
-def is_sft_mode(args: Namespace) -> bool:
-    """Single source of truth for the "are we training SFT?" check.
+def is_offline_mode(args: Namespace) -> bool:
+    """Return whether training consumes offline datasets instead of rollouts.
 
-    ``args.loss_type == "sft"`` is the canonical signal across argparse,
-    controller wiring, components, and the Megatron backend.
+    Shared by argparse, controller wiring, components, and the Megatron
+    backend.
     """
-    return getattr(args, "loss_type", None) == "sft"
-
-
-def sft_objective(args: Namespace) -> str:
-    """Return the offline objective while preserving causal-LM defaults."""
-    return getattr(args, "sft_objective", "causal_lm")
+    return getattr(args, "loss_type", None) in {"sft", "dpo"}
 
 
 def is_preference_mode(args: Namespace) -> bool:
-    return is_sft_mode(args) and sft_objective(args) == "dpo"
+    return getattr(args, "loss_type", None) == "dpo"
 
 
 def validate_preference_args(args: Namespace) -> None:
@@ -106,7 +101,7 @@ def validate_preference_args(args: Namespace) -> None:
     if getattr(args, "qkv_format", "thd") != "thd":
         raise ValueError("preference objectives v1 require --qkv-format thd")
     if getattr(args, "fully_async", False) or getattr(args, "hybrid", False):
-        raise ValueError("preference objectives v1 support synchronous SFT topology only")
+        raise ValueError("preference objectives v1 support synchronous offline training only")
     if not getattr(args, "use_gloo_process_groups", False):
         raise ValueError("preference objectives require --use-gloo-process-groups for DP iterator control data")
     if getattr(args, "sft_chunked_logits", False) or getattr(args, "enable_mtp_training", False):
@@ -166,7 +161,7 @@ def should_skip_mtp_only_weight_management(
     rollout sync."""
     return bool(
         getattr(args, "mtp_only_training", False)
-        and is_sft_mode(args)
+        and getattr(args, "loss_type", None) == "sft"
         and getattr(args, "sft_predict_interval", None) is None
         and not getattr(args, "offload_train", False)
         and not with_ref
@@ -184,11 +179,11 @@ def should_bypass_main_output_layer(args: Namespace) -> bool:
 def should_use_sft_chunked(args: Namespace) -> bool:
     """Return whether regular SFT explicitly enabled chunked language-model
     logits."""
-    return is_sft_mode(args) and getattr(args, "sft_chunked_logits", False)
+    return getattr(args, "loss_type", None) == "sft" and getattr(args, "sft_chunked_logits", False)
 
 
 def sft_partition_id(args: Namespace, step: int) -> str:
-    return f"sft_{step}" if is_sft_mode(args) else f"train_{step}"
+    return f"sft_{step}" if is_offline_mode(args) else f"train_{step}"
 
 
 def sft_tq_num_shards(args: Namespace) -> int:
@@ -197,7 +192,7 @@ def sft_tq_num_shards(args: Namespace) -> int:
     Kept as an env knob while this path is experimental so launch scripts can
     do A/B tests without adding a public CLI surface.
     """
-    if not is_sft_mode(args) or not getattr(args, "sft_async_prepack", False):
+    if getattr(args, "loss_type", None) != "sft" or not getattr(args, "sft_async_prepack", False):
         return 1
     return max(1, Envs.RELAX_SFT_TQ_SHARDS)
 
@@ -222,9 +217,9 @@ def sft_task_name(args: Namespace, *, component: str = "actor") -> str:
 
     ``component`` distinguishes ``components/actor.py`` (uses ``train_actor``
     for RL reset/clear) from ``backends/megatron/actor.py`` (uses ``train``
-    when consuming). Both collapse to ``sft_train`` under SFT.
+    when consuming). Both use ``sft_train`` for offline training.
     """
-    if is_sft_mode(args):
+    if is_offline_mode(args):
         return "sft_train"
     if component == "actor":
         return "train_actor"
@@ -238,7 +233,7 @@ def should_run_sft_eval(args: Namespace, rollout_id: int) -> bool:
 
     Pure Megatron path; no Rollout/SGLang involvement.
     """
-    if not is_sft_mode(args):
+    if not is_offline_mode(args):
         return False
     has_eval_source = bool(getattr(args, "eval_prompt_data", None)) or (getattr(args, "eval_size", None) is not None)
     if not has_eval_source:
@@ -253,8 +248,10 @@ def should_run_sft_predict(args: Namespace, rollout_id: int) -> bool:
     """SFT periodic predict triggers every ``--sft-predict-interval`` steps.
 
     Argparse already validated ``--loss-type sft``, ``--save``, and the eval
-    data source, so we only need the interval check here.
+    data source. Keep prediction exclusive to SFT.
     """
+    if getattr(args, "loss_type", None) != "sft":
+        return False
     interval = getattr(args, "sft_predict_interval", None)
     if interval is None or interval <= 0:
         return False

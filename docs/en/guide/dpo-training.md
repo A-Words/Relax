@@ -57,7 +57,7 @@ Run the [DPO training script](../../../scripts/training/dpo/run-qwen3-0.6B-ultra
 NUM_GPUS=1 bash scripts/training/dpo/run-qwen3-0.6B-ultrafeedback-1xgpu.sh
 ```
 
-The script uses a frozen copy of the downloaded model as the reference model. It saves checkpoints to `${SAVE_DIR}/${EXP_NAME}` and writes logs to `log/`.
+The script selects DPO with `--loss-type dpo` and uses a frozen copy of the downloaded model as the reference model. It saves checkpoints to `${SAVE_DIR}/${EXP_NAME}` and writes logs to `log/`.
 
 Set these environment variables before you run the script to change its defaults:
 
@@ -102,5 +102,4 @@ For reference-free DPO, add `--dpo-reference-free` to the training command. Remo
 
 ## Next steps
 
-- [SFT training](./sft-training.md)
 - [Training configuration](./customize-training.md)

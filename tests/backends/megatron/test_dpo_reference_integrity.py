@@ -25,7 +25,6 @@ from relax.backends.megatron.reference_integrity import (
     resolve_dpo_reference_checkpoint,
     write_reference_identity,
 )
-from relax.engine.sft.runtime import is_preference_mode
 from relax.utils.training import tensor_backper
 
 
@@ -296,7 +295,6 @@ def reference_actor_methods():
         "DPOReferenceIdentity": DPOReferenceIdentity,
         "REFERENCE_LOADER_MODE": REFERENCE_LOADER_MODE,
         "canonical_tensor_sha256": canonical_tensor_sha256,
-        "is_preference_mode": is_preference_mode,
         "reference_identity_path": reference_identity_path,
         "write_reference_identity": write_reference_identity,
         "device_utils": types.SimpleNamespace(maybe_backend_process_on_model_switch=lambda: None),
@@ -382,8 +380,7 @@ def test_save_model_persists_reference_identity(tmp_path, reference_actor_method
     actor_type, namespace = reference_actor_methods
     instance = actor_type()
     instance.args = Namespace(
-        loss_type="sft",
-        sft_objective="dpo",
+        loss_type="dpo",
         dpo_reference_free=False,
         debug_rollout_only=False,
         offload_train=False,

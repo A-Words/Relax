@@ -16,11 +16,28 @@ except Exception as exc:
 
 
 def _args(*, reference_free: bool = False, beta: float = 0.2) -> Namespace:
-    return Namespace(dpo_reference_free=reference_free, dpo_beta=beta)
+    return Namespace(
+        loss_type="dpo",
+        dpo_reference_free=reference_free,
+        dpo_beta=beta,
+        qkv_format="thd",
+        calculate_per_token_loss=False,
+        global_batch_size=2,
+        recompute_loss_function=False,
+        allgather_cp=False,
+    )
 
 
 def _run(
-    monkeypatch, policy_values, *, order=None, reference_free=False, ref_values=None, num_samples=2, pair_ids=None
+    monkeypatch,
+    policy_values,
+    *,
+    order=None,
+    reference_free=False,
+    ref_values=None,
+    num_samples=2,
+    pair_ids=None,
+    dispatch=False,
 ):
     if order is None:
         order = [0, 1, 2, 3]
@@ -43,15 +60,23 @@ def _run(
         "ref_log_probs": reference,
         "num_samples": num_samples,
     }
-    return loss_module.dpo_loss_function(_args(reference_free=reference_free), batch, logits, lambda value: value)
+    args = _args(reference_free=reference_free)
+    if not dispatch:
+        return loss_module.dpo_loss_function(args, batch, logits, lambda value: value)
+    monkeypatch.setattr(loss_module.mpu, "get_context_parallel_world_size", lambda: 1)
+    monkeypatch.setattr(loss_module.mpu, "get_data_parallel_world_size", lambda **kwargs: 1)
+    loss, _, log = loss_module.loss_function(args, batch, num_microbatches=1, logits=logits)
+    return loss, dict(zip(log["keys"], log["values"][1:], strict=True))
 
 
 @pytest.mark.parametrize("pair_ids", [[10, 10, 20, 20], [10, 10, 10, 10]])
 def test_production_dpo_loss_matches_independent_reference_and_gradients(monkeypatch, pair_ids):
     policy = torch.tensor([-1.0, -2.0, -0.5, -0.75], requires_grad=True)
     reference = torch.tensor([-1.2, -1.7, -0.4, -0.8])
-    actual, metrics = _run(monkeypatch, list(policy.unbind()), ref_values=list(reference.unbind()), pair_ids=pair_ids)
-    expected = -F.logsigmoid(0.2 * ((policy[0::2] - policy[1::2]) - (reference[0::2] - reference[1::2]))).sum()
+    actual, metrics = _run(
+        monkeypatch, list(policy.unbind()), ref_values=list(reference.unbind()), pair_ids=pair_ids, dispatch=True
+    )
+    expected = -F.logsigmoid(0.2 * ((policy[0::2] - policy[1::2]) - (reference[0::2] - reference[1::2]))).mean()
     torch.testing.assert_close(actual, expected)
     expected_rewards = 0.2 * (policy.detach() - reference)
     torch.testing.assert_close(metrics["dpo/reward_chosen"], expected_rewards[0::2].sum())

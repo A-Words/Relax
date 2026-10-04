@@ -1483,8 +1483,8 @@ def loss_function(
 ) -> tuple[torch.Tensor, int | torch.Tensor, dict[str, list[str] | torch.Tensor]]:
     """Dispatch to the configured loss and rescale for Megatron integration.
 
-    Selects one of "policy_loss", "value_loss", "sft", or a custom loss
-    function based on `args.loss_type`, computes the loss and metrics, then
+    Selects the loss function based on `args.loss_type`, computes the loss
+    and metrics, then
     rescales the loss by micro-batch and parallelism factors to integrate with
     Megatron's gradient accumulation.
 
@@ -1550,10 +1550,10 @@ def loss_function(
                 func = policy_loss_function
             case "value_loss":
                 func = value_loss_function
+            case "dpo":
+                func = dpo_loss_function
             case "sft":
-                if getattr(args, "sft_objective", "causal_lm") == "dpo":
-                    func = dpo_loss_function
-                elif getattr(args, "task_type", "causal_lm") == "seq_cls":
+                if getattr(args, "task_type", "causal_lm") == "seq_cls":
                     func = sequence_classification_loss_function
                 elif getattr(args, "sft_chunked_logits", False) and lm_head_forward is not None:
                     # Bind lm_head_forward so chunked path matches the standard

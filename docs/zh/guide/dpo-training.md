@@ -57,7 +57,7 @@ export EXP_NAME=qwen3-0.6b-ultrafeedback-dpo-gpu1
 NUM_GPUS=1 bash scripts/training/dpo/run-qwen3-0.6B-ultrafeedback-1xgpu.sh
 ```
 
-脚本使用下载模型的冻结副本作为参考模型。检查点保存在 `${SAVE_DIR}/${EXP_NAME}`，日志保存在 `log/`。
+脚本通过 `--loss-type dpo` 选择 DPO 训练，并使用下载模型的冻结副本作为参考模型。检查点保存在 `${SAVE_DIR}/${EXP_NAME}`，日志保存在 `log/`。
 
 启动前可以设置以下环境变量来调整默认配置：
 
@@ -102,5 +102,4 @@ DPO 在 `train/dpo/` 下记录以下指标：
 
 ## 下一步
 
-- [SFT 训练](./sft-training.md)
 - [训练配置](./customize-training.md)

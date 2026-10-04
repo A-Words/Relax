@@ -12,7 +12,7 @@ import torch
 def _mk_actor_args(loss_type: str):
     return Namespace(
         loss_type=loss_type,
-        compute_advantages_and_returns=(loss_type != "sft"),
+        compute_advantages_and_returns=(loss_type not in {"sft", "dpo"}),
         debug_train_only=False,
         offload_train=False,
         offload_rollout=False,
@@ -47,8 +47,7 @@ def test_sft_data_fields_excludes_rl_only_keys():
 def test_preference_data_fields_keep_pairs_atomic():
     from relax.utils.training.data_fields import build_data_fields
 
-    args = _mk_actor_args(loss_type="sft")
-    args.sft_objective = "dpo"
+    args = _mk_actor_args(loss_type="dpo")
 
     fields = build_data_fields(args)
 

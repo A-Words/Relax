@@ -33,8 +33,8 @@ from relax.distributed.ray.train_actor import TrainRayActor
 from relax.engine.sft.eval.runner import run_sft_eval
 from relax.engine.sft.predict.runner import run_sft_predict
 from relax.engine.sft.runtime import (
+    is_offline_mode,
     is_preference_mode,
-    is_sft_mode,
     sft_partition_id,
     sft_partition_ids,
     sft_task_name,
@@ -341,9 +341,12 @@ class _SFTPrepackedDeviceIterator:
 class MegatronTrainRayActor(TrainRayActor):
     @property
     def _per_step_rollout(self) -> bool:
-        """RL: rollout consumes weights every train step. SFT: only on
-        periodic predict steps; Megatron stays awake between."""
-        return not is_sft_mode(self.args)
+        """RL consumes weights every train step.
+
+        Offline training keeps Megatron awake; SFT may sync weights for
+        periodic prediction.
+        """
+        return not is_offline_mode(self.args)
 
     def init(
         self,
@@ -386,7 +389,7 @@ class MegatronTrainRayActor(TrainRayActor):
         self._sft_train_prefetch_executor: ThreadPoolExecutor | None = None
         self._sft_train_prefetch: Future[tuple[list, float]] | None = None
         self._sft_train_prefetch_rollout_id: int | None = None
-        if is_sft_mode(self.args) and getattr(self.args, "sft_train_data_prefetch", False):
+        if is_offline_mode(self.args) and getattr(self.args, "sft_train_data_prefetch", False):
             self._sft_train_prefetch_executor = ThreadPoolExecutor(
                 max_workers=1,
                 thread_name_prefix="sft-tq-prefetch",
@@ -493,7 +496,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.weights_backuper.backup("actor")
 
             if with_ref:
-                if is_preference_mode(args) and args.sft_objective == "dpo":
+                if args.loss_type == "dpo":
                     reference_checkpoint = resolve_dpo_reference_checkpoint(
                         args.dpo_reference_repository, args.dpo_reference_revision, args.hf_checkpoint
                     )
@@ -760,7 +763,7 @@ class MegatronTrainRayActor(TrainRayActor):
         self._active_model_tag = target_tag
 
     def _is_standard_dpo(self) -> bool:
-        return is_preference_mode(self.args) and self.args.sft_objective == "dpo" and not self.args.dpo_reference_free
+        return self.args.loss_type == "dpo" and not self.args.dpo_reference_free
 
     def _assert_dp_reference_digest_equal(self, digest: str) -> None:
         digests = [None] * dist.get_world_size(group=get_gloo_group())
@@ -953,13 +956,13 @@ class MegatronTrainRayActor(TrainRayActor):
             )
 
     def _run_step_evaluation(self, rollout_id: int, *, end_update_weight: bool = False) -> None:
-        is_sft = is_sft_mode(self.args)
+        is_offline = is_offline_mode(self.args)
         has_rollout = getattr(self, "rollout_manager", None) is not None
 
-        if not is_sft and dist.get_rank() != 0:
+        if not is_offline and dist.get_rank() != 0:
             return
 
-        if is_sft:
+        if is_offline:
             should_run_eval = should_run_sft_eval(self.args, rollout_id)
             should_run_predict = has_rollout and should_run_sft_predict(self.args, rollout_id)
             try:
@@ -977,7 +980,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 if should_run_predict:
                     run_sft_predict(self, rollout_id)
             except Exception as e:
-                logger.warning(f"SFT eval/predict at rollout_id {rollout_id} failed: {e}")
+                logger.warning(f"Offline eval/predict at rollout_id {rollout_id} failed: {e}")
                 raise
             return
 
@@ -1037,7 +1040,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_train_only:
             logger.info(f"start to get rollout_id: {rollout_id} data from transfer queue for debug with mcore.")
             dp_size = mpu.get_data_parallel_world_size(with_context_parallel=False)
-            if is_sft_mode(self.args):
+            if is_offline_mode(self.args):
                 batch_size = self.args.global_batch_size // dp_size
                 rollout_mini_local_sample_counts = None
             else:
@@ -1046,7 +1049,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_mini_local_sample_counts = None
             rollout_data = get_debug_data(self.args, rollout_id, batch_size, dp_rank=mpu.get_data_parallel_rank())
             post_process_rollout_data(self.args, rollout_data)
-            if not is_sft_mode(self.args):
+            if not is_offline_mode(self.args):
                 rollout_mini_local_sample_counts = _rollout_mini_row_counts(
                     rollout_data["sample_indices"],
                     plan.mini_local_sample_request,
@@ -1060,7 +1063,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 return self.train_actor(rollout_id, rollout_data)
         else:
             logger.info(f"start to get rollout_id: {rollout_id} data from transfer queue for train with mcore.")
-            if is_sft_mode(self.args):
+            if is_offline_mode(self.args):
                 batch_size = self.args.global_batch_size // mpu.get_data_parallel_world_size(
                     with_context_parallel=False
                 )
@@ -1082,11 +1085,11 @@ class MegatronTrainRayActor(TrainRayActor):
             # zero mini batches. Use a role-specific task_name so consumption is
             # tracked independently per consumer.
             base_task_name = sft_task_name(self.args, component="backend")
-            if not is_sft_mode(self.args) and self.role == "critic":
+            if not is_offline_mode(self.args) and self.role == "critic":
                 task_name = f"{base_task_name}_critic"
             else:
                 task_name = base_task_name
-            if is_sft_mode(self.args) and self._sft_window_prefetcher is not None:
+            if self.args.loss_type == "sft" and self._sft_window_prefetcher is not None:
                 data_fields = build_data_fields(self.args, consumer="actor")
                 rollout_data, prepared_iterator, num_microbatches = self._get_prefetched_sft_window(
                     task_name,
@@ -1111,7 +1114,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 # alive for that exact prefetched rollout; all other paths
                 # retain the normal consumed-partition exit condition.
                 has_prefetched_sft_batch = (
-                    is_sft_mode(self.args)
+                    is_offline_mode(self.args)
                     and self._sft_train_prefetch is not None
                     and self._sft_train_prefetch_rollout_id == rollout_id
                 )
@@ -1141,7 +1144,7 @@ class MegatronTrainRayActor(TrainRayActor):
                         time.sleep(empty_poll_sleep_s)
                     continue
                 batch_index += 1
-                if is_sft_mode(self.args):
+                if is_offline_mode(self.args):
                     # Start N+1 only after every rank has finalized N. A raw
                     # prefetch can return empty on a subset of ranks while the
                     # producer is publishing the partition; scheduling N+1
@@ -1158,7 +1161,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_mini_batch_metas.append(batch_meta)
                 rollout_mini_local_sample_counts.append(len(rollout_data["total_lengths"]))
 
-            if not is_sft_mode(self.args):
+            if not is_offline_mode(self.args):
                 if len(rollout_mini_batches) != num_rollout_minis:
                     raise RuntimeError(
                         f"Expected {num_rollout_minis} rollout mini batches for rollout_id={rollout_id}, "
@@ -1677,7 +1680,7 @@ class MegatronTrainRayActor(TrainRayActor):
             data_iterator, num_microbatches = prepared_data_iterator, prepared_num_microbatches
         # Create a separate iterator with a larger token budget for ref/teacher log-probs
         if (
-            not is_sft_mode(self.args)
+            not is_offline_mode(self.args)
             and self.args.use_dynamic_batch_size
             and self.args.log_probs_max_tokens_per_gpu != self.args.max_tokens_per_gpu
         ):

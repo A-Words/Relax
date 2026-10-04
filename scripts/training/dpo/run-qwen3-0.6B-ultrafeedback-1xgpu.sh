@@ -24,8 +24,7 @@ ray job submit ${RAY_NO_WAIT:+--no-wait} --address="http://127.0.0.1:8265" \
     --runtime-env-json="${RUNTIME_ENV_JSON}" \
     -- python3 -m relax.entrypoints.train \
     --resource '{"sft":[1,0],"actor":[1,1]}' \
-    --loss-type sft \
-    --sft-objective dpo \
+    --loss-type dpo \
     --dpo-beta 0.1 \
     --dpo-reference-repository Qwen/Qwen3-0.6B \
     --dpo-reference-revision "${MODEL_REVISION}" \
