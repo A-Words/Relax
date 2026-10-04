@@ -15,8 +15,8 @@ MODEL_REVISION=c1899de289a04d12100db370d81485cdf75e47ca
 HF_CHECKPOINT="${HF_CHECKPOINT:-${MODEL_DIR}/Qwen3-0.6B-${MODEL_REVISION}}"
 PROMPT_DATA="${PROMPT_DATA:?set PROMPT_DATA to the Task 31 train JSONL or Parquet}"
 EVAL_PROMPT_DATA="${EVAL_PROMPT_DATA:?set EVAL_PROMPT_DATA to the Task 31 held-out JSONL or Parquet}"
-SAVE_DIR="${SAVE_DIR:-${SCRIPT_DIR}/../../../checkpoints/task31-dpo}"
-EXP_NAME="${EXP_NAME:-qwen3-0.6b-ultrafeedback-dpo-gpu1}"
+SAVE_DIR="${SAVE_DIR:-${SCRIPT_DIR}/../../../checkpoints/task31-reward-modeling}"
+EXP_NAME="${EXP_NAME:-qwen3-0.6b-ultrafeedback-rm-gpu1}"
 now=$(date "+%Y-%m-%d-%H:%M:%S")
 
 mkdir -p log "${SAVE_DIR}"
@@ -25,8 +25,7 @@ ray job submit ${RAY_NO_WAIT:+--no-wait} --address="http://127.0.0.1:8265" \
     --runtime-env-json="${RUNTIME_ENV_JSON}" \
     -- python3 -m relax.entrypoints.train \
     --resource '{"sft":[1,0],"actor":[1,1]}' \
-    --loss-type dpo \
-    --dpo-beta 0.1 \
+    --loss-type rm \
     --prompt-data "${PROMPT_DATA}" \
     --eval-prompt-data task31 "${EVAL_PROMPT_DATA}" \
     --eval-interval "${EVAL_INTERVAL:-200}" \
@@ -36,10 +35,9 @@ ray job submit ${RAY_NO_WAIT:+--no-wait} --address="http://127.0.0.1:8265" \
     --hf-checkpoint "${HF_CHECKPOINT}" \
     --ref-load "${HF_CHECKPOINT}" \
     --megatron-to-hf-mode bridge \
-    --enable-weights-backuper \
     --save "${SAVE_DIR}/${EXP_NAME}" \
     --load "${SAVE_DIR}/${EXP_NAME}" \
-    --save-interval "${SAVE_INTERVAL:-50}" \
+    --save-interval 50 \
     --num-rollout "${NUM_ROLLOUT:-200}" \
     --global-batch-size "${GLOBAL_BATCH_SIZE:-32}" \
     --use-dynamic-batch-size \
@@ -49,10 +47,9 @@ ray job submit ${RAY_NO_WAIT:+--no-wait} --address="http://127.0.0.1:8265" \
     --pipeline-model-parallel-size 1 \
     --context-parallel-size 1 \
     --optimizer adam \
-    --lr "${LR:-5e-7}" \
+    --lr "${LR:-1e-5}" \
     --lr-decay-style cosine \
     --min-lr 0 \
-    ${OVERRIDE_OPT_PARAM_SCHEDULER:+--override-opt-param-scheduler} \
     --weight-decay 0.0 \
     --clip-grad 1.0 \
     --attention-dropout 0.0 \

@@ -69,7 +69,7 @@ def test_sft_train_data_prefetch_allows_raw_only_mode(arguments_module):
     arguments_module._validate_sft_train_data_prefetch(args, is_offline=True)
 
 
-@pytest.mark.parametrize("loss_type", ["sft", "sft_loss", "sft-loss", "dpo"])
+@pytest.mark.parametrize("loss_type", ["sft", "sft_loss", "sft-loss", "dpo", "rm"])
 def test_offline_loss_selects_dataset_training(arguments_module, loss_type):
     arguments_module.RouterArgs = SimpleNamespace(add_cli_args=lambda parser, **_kwargs: parser)
     parser = argparse.ArgumentParser()
@@ -83,8 +83,8 @@ def test_offline_loss_selects_dataset_training(arguments_module, loss_type):
     args.loss_type = parsed.loss_type
     args.advantage_estimator = "ppo"
     args.prompt_data = ["/train.jsonl"]
-    args.eval_interval = None if loss_type == "dpo" else 10
-    args.eval_size = None if loss_type == "dpo" else 0.1
+    args.eval_interval = 10
+    args.eval_size = 0.1
     args.use_dynamic_batch_size = True
     args.max_tokens_per_gpu = 4096
     args.sft_oversize_strategy = "drop"

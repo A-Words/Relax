@@ -33,6 +33,7 @@ from relax.distributed.ray.train_actor import TrainRayActor
 from relax.engine.sft.eval.runner import run_sft_eval
 from relax.engine.sft.predict.runner import run_sft_predict
 from relax.engine.sft.runtime import (
+    evaluation_step_for_rollout,
     is_offline_mode,
     is_preference_mode,
     sft_partition_id,
@@ -249,7 +250,12 @@ def _should_pause_sft_lookahead(args: Namespace, rollout_id: int) -> bool:
         args.rotate_ckpt
         or (args.save_interval is not None and (next_rollout_id % args.save_interval == 0 or is_train_done))
     )
-    return should_run_sft_eval(args, rollout_id) or should_run_sft_predict(args, rollout_id) or should_save_after_step
+    completed_steps = evaluation_step_for_rollout(args, rollout_id)
+    return (
+        should_run_sft_eval(args, completed_steps)
+        or should_run_sft_predict(args, completed_steps)
+        or should_save_after_step
+    )
 
 
 def _agree_sft_train_prefetch_result(
@@ -989,8 +995,8 @@ class MegatronTrainRayActor(TrainRayActor):
             should_run_predict = has_rollout and should_run_sft_predict(self.args, rollout_id)
             try:
                 if should_run_eval:
-                    if dist.get_rank() == 0:
-                        for partition_id in sft_partition_ids(self.args, rollout_id):
+                    if rollout_id > 0 and dist.get_rank() == 0:
+                        for partition_id in sft_partition_ids(self.args, rollout_id - 1):
                             run(
                                 self.data_system_client.async_clear_partition(
                                     partition_id=partition_id,
@@ -1896,7 +1902,7 @@ class MegatronTrainRayActor(TrainRayActor):
         # RL-only generative eval (uses SGLang via rollout_manager.eval). SFT
         # uses local eval/predict runner below.
         dist.barrier(group=get_gloo_group())
-        self._run_step_evaluation(rollout_id)
+        self._run_step_evaluation(evaluation_step_for_rollout(self.args, rollout_id))
 
         # On the final training step the rollout component has already exited
         # its main loop, so nothing else awaits the eval handler. Block here
@@ -2367,7 +2373,10 @@ class MegatronTrainRayActor(TrainRayActor):
         self.update_weights()
         tracking_utils.flush_metrics(self.args, compute_rollout_step(self.args, rollout_id))
         dist.barrier(group=get_gloo_group())
-        self._run_step_evaluation(rollout_id, end_update_weight=True)
+        self._run_step_evaluation(
+            evaluation_step_for_rollout(self.args, rollout_id),
+            end_update_weight=True,
+        )
 
         # On the final training step the rollout component has already exited
         # its main loop, so the eval just triggered above will not be awaited
@@ -2453,7 +2462,10 @@ class MegatronTrainRayActor(TrainRayActor):
             rollout_only, actor_fwd_only = self._check_services_health()
             self.update_weights_fully_async(rollout_id, rollout_only=rollout_only, actor_fwd_only=actor_fwd_only)
             dist.barrier(group=get_gloo_group())
-            self._run_step_evaluation(rollout_id, end_update_weight=True)
+            self._run_step_evaluation(
+                evaluation_step_for_rollout(self.args, rollout_id),
+                end_update_weight=True,
+            )
             # On the final training step the rollout component has already
             # exited its main loop, so the eval just triggered above will not
             # be awaited anywhere. Block until it finishes; otherwise the
