@@ -619,24 +619,6 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 help="Scale the policy/reference log-probability margin in the DPO loss. Must be finite and positive.",
             )
             parser.add_argument(
-                "--dpo-reference-repository",
-                type=str,
-                default=None,
-                help=(
-                    "Hugging Face repository ID of the frozen DPO reference stored at --hf-checkpoint. "
-                    "Required unless --dpo-reference-free is enabled."
-                ),
-            )
-            parser.add_argument(
-                "--dpo-reference-revision",
-                type=str,
-                default=None,
-                help=(
-                    "Full 40-character commit SHA for --dpo-reference-repository. "
-                    "Required unless --dpo-reference-free is enabled."
-                ),
-            )
-            parser.add_argument(
                 "--dpo-reference-free",
                 action=argparse.BooleanOptionalAction,
                 default=False,
@@ -1758,8 +1740,9 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "The checkpoint for reference model. "
-                    "When --load is not set, this will be used as the initial checkpoint for training. "
+                    "Reference model checkpoint in local Hugging Face or Megatron format. "
+                    "When --load is not set, this is also the initial checkpoint for training. "
+                    "Standard DPO defaults to --hf-checkpoint when this is omitted and keeps the reference frozen. "
                 ),
             )
             parser.add_argument(
@@ -3983,6 +3966,12 @@ def slime_validate_args(args):
         else:
             if args.load is None:
                 args.load = args.ref_load or args.hf_checkpoint
+                if args.loss_type == "dpo":
+                    args.finetune = True
+                    args.no_load_optim = True
+                    args.no_load_rng = True
+                    if getattr(args, "ref_ckpt_step", None) is not None:
+                        args.ckpt_step = args.ref_ckpt_step
             # If is a HF checkpoint, set start_rollout_id to 0 here.
             args.start_rollout_id = 0
     else:

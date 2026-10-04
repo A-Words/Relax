@@ -54,10 +54,10 @@ For common configuration usage and examples, see the [Quick Start Guide](./quick
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--hf-checkpoint` | str | None | HuggingFace model checkpoint path. Used to initialize SGLang and provide tokenizer. Need not contain latest parameters, only consistent with training model architecture |
-| `--ref-load` | str | None | Reference model checkpoint path. Used as initial checkpoint for training when `--load` is not set |
-| `--ref-ckpt-step` | int | None | Reference model checkpoint step |
-| `--load` | str | None | Actor model checkpoint load path. Specify for resuming training |
+| `--hf-checkpoint` | str | None | Hugging Face model path for tokenizer, model configuration, and SGLang initialization. DPO also uses its weights for the frozen reference when `--ref-load` is omitted. |
+| `--ref-load` | str | None | Reference model checkpoint path; also used to initialize training when `--load` is omitted. DPO accepts local Hugging Face or native Megatron checkpoints and falls back to `--hf-checkpoint` when this is omitted. |
+| `--ref-ckpt-step` | int | None | Step to load from a native Megatron reference checkpoint. Defaults to the iteration selected by its checkpoint tracker. |
+| `--load` | str | None | Actor checkpoint to initialize or resume training. For DPO, point to the saved DPO checkpoint to resume; add `--finetune` when loading a native SFT checkpoint to start a new run. |
 | `--save` | str | None | Path to save model during training |
 | `--save-interval` | int | None | Model save interval in steps |
 | `--save-hf` | str | None | Path to save HuggingFace format model for Megatron backend. Path can include `{rollout_id}` placeholder |
@@ -422,8 +422,6 @@ Use `--loss-type dpo` for DPO. Keep `--task-type causal_lm`; the loss type selec
 | `--preference-max-length` | int | 1024 | Maximum prompt + completion tokens in each branch. Both branches retain the same prompt suffix. Must not exceed `--seq-length`. |
 | `--preference-max-completion-length` | int | 512 | Maximum completion tokens per branch. Keeps the first tokens of longer completions, then trims the shared prompt to fit `--preference-max-length`. Must not exceed that limit. |
 | `--dpo-beta` | float | 0.1 | DPO only. Finite, positive scale for the policy/reference log-probability margin. |
-| `--dpo-reference-repository` | str | None | Standard DPO only. Hugging Face repository ID of the frozen reference already downloaded to `--hf-checkpoint`. Required unless reference-free DPO is explicitly enabled. |
-| `--dpo-reference-revision` | str | None | Standard DPO only. Full 40-character commit SHA of the reference repository. Required unless reference-free DPO is explicitly enabled. |
 | `--dpo-reference-free` | flag | False | DPO only. Explicitly enable reference-free logistic DPO. Missing or invalid reference configuration raises an error instead of enabling this mode. |
 
 `--global-batch-size` counts pairs. `--max-tokens-per-gpu` counts both complete branches, so it counts the shared prompt twice; this pair budget can cause further truncation during preprocessing. Preference training does not support `--sft-predict-interval`, `--sft-chunked-logits`, or `--sft-async-prepack`.

@@ -137,18 +137,10 @@ def validate_preference_args(args: Namespace) -> None:
             "preference objectives require --rollout-temperature 1.0 so sampling temperature does not scale "
             "policy/reference likelihood logits"
         )
-    if getattr(args, "ref_load", None) is not None:
-        raise ValueError(
-            "preference objectives do not use --ref-load: standard DPO snapshots the frozen reference "
-            "from the pinned --dpo-reference-repository/--dpo-reference-revision snapshot"
-        )
     if not getattr(args, "dpo_reference_free", False) and getattr(args, "ref_update_interval", None) is not None:
         raise ValueError("standard DPO requires a frozen reference and rejects --ref-update-interval")
     if not getattr(args, "dpo_reference_free", False) and not getattr(args, "enable_weights_backuper", False):
         raise ValueError("standard DPO requires --enable-weights-backuper for actor/ref snapshots")
-    if not getattr(args, "dpo_reference_free", False):
-        if not getattr(args, "dpo_reference_repository", None) or not getattr(args, "dpo_reference_revision", None):
-            raise ValueError("standard DPO requires --dpo-reference-repository and --dpo-reference-revision")
 
 
 def should_skip_mtp_only_weight_management(

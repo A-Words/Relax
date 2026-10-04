@@ -54,10 +54,10 @@
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `--hf-checkpoint` | str | None | HuggingFace 模型检查点路径。用于初始化 SGLang 和提供 tokenizer。不需要包含最新的参数，只需与训练模型架构一致 |
-| `--ref-load` | str | None | 参考模型检查点路径。当 `--load` 未设置时，会作为训练的初始检查点 |
-| `--ref-ckpt-step` | int | None | 参考模型检查点的步数 |
-| `--load` | str | None | Actor 模型检查点加载路径。断点续训时指向此路径 |
+| `--hf-checkpoint` | str | None | Hugging Face 模型路径，用于提供 tokenizer、模型配置和初始化 SGLang。DPO 未设置 `--ref-load` 时，也会从此处加载冻结参考模型的权重。 |
+| `--ref-load` | str | None | 参考模型检查点路径；未设置 `--load` 时，也用于初始化训练。DPO 支持本地 Hugging Face 或原生 Megatron 检查点；省略此参数时使用 `--hf-checkpoint`。 |
+| `--ref-ckpt-step` | int | None | 从原生 Megatron 参考检查点加载的步数。默认使用检查点记录的迭代。 |
+| `--load` | str | None | 用于初始化或恢复训练的 Actor 检查点。DPO 续训时指向已保存的 DPO 检查点；从原生 SFT 检查点开始新训练时需同时设置 `--finetune`。 |
 | `--save` | str | None | 训练中模型的保存路径 |
 | `--save-interval` | int | None | 模型保存间隔（步数） |
 | `--save-hf` | str | None | Megatron 后端时保存 HuggingFace 格式模型的路径。路径可包含 `{rollout_id}` 占位符 |
@@ -422,8 +422,6 @@ PPO 当前支持同步 colocate 模式，并要求在 `--resource` 中包含 `cr
 | `--preference-max-length` | int | 1024 | 每条分支的 prompt 与 completion token 总数上限。两条分支保留相同的 prompt 后缀，且上限不能超过 `--seq-length`。 |
 | `--preference-max-completion-length` | int | 512 | 每条分支的 completion token 上限。过长回答保留开头的 token，再裁剪共享 prompt 以满足 `--preference-max-length`；此值不能超过该总长度上限。 |
 | `--dpo-beta` | float | 0.1 | 仅用于 DPO。缩放策略与参考模型的对数概率差值，必须为有限正数。 |
-| `--dpo-reference-repository` | str | None | 仅用于标准 DPO。已下载到 `--hf-checkpoint` 的冻结参考模型的 Hugging Face 仓库 ID；未显式启用 reference-free DPO 时必填。 |
-| `--dpo-reference-revision` | str | None | 仅用于标准 DPO。参考仓库的完整 40 位提交 SHA；未显式启用 reference-free DPO 时必填。 |
 | `--dpo-reference-free` | flag | False | 仅用于 DPO。显式启用 reference-free logistic DPO；参考模型配置缺失或无效时会报错，不会自动切换到此模式。 |
 
 `--global-batch-size` 按样本对计数。`--max-tokens-per-gpu` 计算两条完整分支的 token 数，因此共享 prompt 会计入两次；预处理时可能为满足这项总预算再次截断。偏好训练不支持 `--sft-predict-interval`、`--sft-chunked-logits` 或 `--sft-async-prepack`。

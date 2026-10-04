@@ -39,7 +39,7 @@ hf download Qwen/Qwen3-0.6B \
   --local-dir "${HF_CHECKPOINT}"
 ```
 
-保留完整的下载目录，包括 `.cache/huggingface`。DPO 会通过其中的下载记录检查参考模型的版本。
+也可以将 `HF_CHECKPOINT` 设为本地 Hugging Face 格式的 SFT 模型目录，其中需包含模型权重、配置和 tokenizer。
 
 ## 启动 DPO 训练
 
@@ -57,7 +57,9 @@ export EXP_NAME=qwen3-0.6b-ultrafeedback-dpo-gpu1
 NUM_GPUS=1 bash scripts/training/dpo/run-qwen3-0.6B-ultrafeedback-1xgpu.sh
 ```
 
-脚本通过 `--loss-type dpo` 选择 DPO 训练，并使用下载模型的冻结副本作为参考模型。检查点保存在 `${SAVE_DIR}/${EXP_NAME}`，日志保存在 `log/`。
+脚本通过 `--loss-type dpo` 选择 DPO 训练，并设置 `--ref-load "${HF_CHECKPOINT}"` 加载冻结参考模型。自行编写训练命令时，省略 `--ref-load` 会改用 `--hf-checkpoint`。脚本将检查点保存在 `${SAVE_DIR}/${EXP_NAME}`，日志保存在 `log/`。
+
+从原生 Megatron SFT 检查点开始 DPO 训练时，在训练命令中设置 `--ref-load /checkpoints/sft` 并省略 `--load`；Relax 会用模型权重初始化策略模型，开始新训练。`--hf-checkpoint` 仍需指向匹配的 Hugging Face 配置和 tokenizer 文件。可用 `--ref-ckpt-step` 选择参考模型的迭代，省略时使用检查点记录的迭代。如果显式将 `--load` 设为 SFT 检查点，还需添加 `--finetune`。
 
 启动前可以设置以下环境变量来调整默认配置：
 
@@ -77,7 +79,9 @@ NUM_GPUS=1 bash scripts/training/dpo/run-qwen3-0.6B-ultrafeedback-1xgpu.sh
 
 使用相同的路径和训练配置重新运行脚本。脚本会从 `${SAVE_DIR}/${EXP_NAME}` 加载检查点，并从已保存的步数继续训练。要另开一次训练，请更换 `EXP_NAME`。
 
-保留完整的检查点目录，包括每个已保存迭代目录中的 `relax_dpo_reference.json`。DPO 通过这个文件检查参考模型是否发生变化。
+自行编写续训命令时，将 `--load` 设为 DPO 检查点目录，并省略 `--finetune`。保持 `--ref-load` 指向原始参考检查点；若此前省略了 `--ref-load`，则保持使用相同的 `--hf-checkpoint`。
+
+保留完整的检查点目录，包括每个已保存迭代目录中的 `relax_dpo_reference.json`。续训时，DPO 会比较实际加载的参考权重哈希与已保存的哈希，不一致时会报错。
 
 ## 查看训练指标
 
@@ -98,7 +102,7 @@ DPO 在 `train/dpo/` 下记录以下指标：
 - 使用偏好训练目标时，保留 `--task-type causal_lm`。
 - 可以使用普通的 CPU 数据预取。目前不支持异步预打包、MTP、chunked logits 和 LoRA。
 
-使用无参考模型的 DPO 时，在训练命令中添加 `--dpo-reference-free`，并移除 `--dpo-reference-repository` 和 `--dpo-reference-revision`。这种模式不记录参考模型的对数概率。
+使用无参考模型的 DPO 时，在训练命令中添加 `--dpo-reference-free`。这种模式不会加载冻结参考模型，也不记录参考模型的对数概率。
 
 ## 下一步
 

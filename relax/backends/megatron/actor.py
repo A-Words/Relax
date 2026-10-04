@@ -73,6 +73,7 @@ from relax.utils.megatron_peft_utils import (
 )
 from relax.utils.memory_utils import clear_memory, print_memory
 from relax.utils.metrics.metric_utils import compute_rollout_step
+from relax.utils.model_source import is_model_source_alias
 from relax.utils.opd.opd_utils import (
     append_managed_opd_teacher_offload_handle,
     append_managed_opd_teacher_onload_handle,
@@ -100,7 +101,7 @@ from relax.utils.utils import (
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.training.tensor_backper import TensorBackuper
-from .checkpoint import is_megatron_checkpoint, load_checkpoint
+from .checkpoint import _checkpoint_iteration_dir, is_megatron_checkpoint, load_checkpoint
 from .collective_utils import _agree_drained
 from .cp_utils import all_gather_with_cp, maybe_padded_total_lengths, slice_with_cp
 from .data import (
@@ -123,12 +124,10 @@ from .initialize import init, is_megatron_main_rank
 from .loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values
 from .model import forward_only, initialize_model_and_optimizer, save, train
 from .reference_integrity import (
-    REFERENCE_LOADER_MODE,
     DPOReferenceIdentity,
     canonical_tensor_sha256,
     read_reference_identity,
     reference_identity_path,
-    resolve_dpo_reference_checkpoint,
     write_reference_identity,
 )
 from .weight_update.common import named_params_and_buffers
@@ -431,7 +430,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.args.lr = self.args.critic_lr
             self.args.lr_warmup_iters = self.args.critic_lr_warmup_iters
 
-        resumed_from_megatron = args.load is not None and is_megatron_checkpoint(args.load)
+        resumed_from_megatron = not args.finetune and args.load is not None and is_megatron_checkpoint(args.load)
         self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
             args, role
         )
@@ -497,13 +496,10 @@ class MegatronTrainRayActor(TrainRayActor):
 
             if with_ref:
                 if args.loss_type == "dpo":
-                    reference_checkpoint = resolve_dpo_reference_checkpoint(
-                        args.dpo_reference_repository, args.dpo_reference_revision, args.hf_checkpoint
-                    )
                     if resumed_from_megatron:
                         identity_path = reference_identity_path(args.load, loaded_rollout_id)
                         self._expected_dpo_reference_identity = read_reference_identity(identity_path)
-                    self._rebuild_dpo_reference(reference_checkpoint)
+                    self._rebuild_dpo_reference(args.ref_load or args.hf_checkpoint)
                 else:
                     self.load_other_checkpoint("ref", args.ref_load)
 
@@ -775,23 +771,50 @@ class MegatronTrainRayActor(TrainRayActor):
         expected = self._expected_dpo_reference_identity
         if expected is None:
             return
-        fields = ("repository", "revision", "loader_mode", "parameter_sha256")
-        mismatches = {
-            field: (getattr(expected, field), getattr(actual, field))
-            for field in fields
-            if getattr(expected, field) != getattr(actual, field)
-        }
-        if mismatches:
-            raise RuntimeError(f"DPO frozen-reference identity mismatch: {mismatches}")
+        if expected.parameter_sha256 != actual.parameter_sha256:
+            raise RuntimeError(
+                "DPO frozen-reference identity mismatch: "
+                f"expected parameter_sha256={expected.parameter_sha256}, actual={actual.parameter_sha256}"
+            )
 
     def _rebuild_dpo_reference(self, path: str) -> None:
         """Transactionally rebuild a frozen reference without touching
         optimizer state."""
         if self._active_model_tag != "actor" or "actor" not in self.weights_backuper.backup_tags:
             raise RuntimeError("DPO reference rebuild requires an active actor backup")
+        if is_model_source_alias(self.args, path):
+            path = self.args.hf_checkpoint
+        if not os.path.isdir(path) or not (
+            is_megatron_checkpoint(path) or os.path.isfile(os.path.join(path, "config.json"))
+        ):
+            raise ValueError(f"DPO reference must be an existing Hugging Face or Megatron checkpoint: {path}")
+        reference_step = self.args.ref_ckpt_step
+        if is_megatron_checkpoint(path):
+            iteration_dir = _checkpoint_iteration_dir(path, reference_step)
+            if not iteration_dir.is_dir() or not any(iteration_dir.iterdir()):
+                raise ValueError(f"DPO reference checkpoint iteration is missing or empty: {iteration_dir}")
+            # Megatron loads from the root plus a step, including when the user
+            # supplied an iteration directory directly.
+            path = str(iteration_dir.parent)
+            reference_step = int(iteration_dir.name[5:]) if iteration_dir.name.startswith("iter_") else None
+            tracker = iteration_dir.parent / "latest_checkpointed_iteration.txt"
+            if not tracker.is_file():
+                raise ValueError(f"DPO reference checkpoint root is missing its tracker: {tracker}")
+            latest = tracker.read_text().strip()
+            if (reference_step == 0 and latest != "0") or (
+                latest == "release" and self.args.ref_ckpt_step is not None
+            ):
+                raise ValueError(
+                    "Megatron cannot select this reference step from the current tracker; "
+                    "use a checkpoint root whose tracker points to the requested reference step"
+                )
         old_args = self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune
+        old_ckpt_step = self.args.ckpt_step
+        old_non_persistent_ckpt_type = self.args.non_persistent_ckpt_type
         try:
             self.args.load = path
+            self.args.ckpt_step = reference_step
+            self.args.non_persistent_ckpt_type = None
             self.args.no_load_optim = True
             self.args.no_load_rng = True
             self.args.finetune = True
@@ -813,10 +836,7 @@ class MegatronTrainRayActor(TrainRayActor):
             )
             self._assert_dp_reference_digest_equal(candidate_sha256)
             candidate = DPOReferenceIdentity(
-                schema_version=1,
-                repository=self.args.dpo_reference_repository,
-                revision=self.args.dpo_reference_revision,
-                loader_mode=REFERENCE_LOADER_MODE,
+                schema_version=2,
                 parameter_sha256=candidate_sha256,
             )
             self._assert_dpo_reference_identity(candidate)
@@ -824,6 +844,8 @@ class MegatronTrainRayActor(TrainRayActor):
             self._dpo_reference_identity = candidate
         finally:
             self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune = old_args
+            self.args.ckpt_step = old_ckpt_step
+            self.args.non_persistent_ckpt_type = old_non_persistent_ckpt_type
             self._switch_model("actor")
 
     def fill_routing_replay(self, data_iterator, num_microbatches, rollout_data):

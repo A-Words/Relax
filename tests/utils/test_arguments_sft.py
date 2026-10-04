@@ -119,3 +119,50 @@ def test_removed_sft_objective_is_rejected_before_backend_parsing(arguments_modu
 
     with pytest.raises(ValueError, match="--sft-objective has been removed.*--loss-type"):
         arguments_module._parse_args_impl()
+
+
+@pytest.mark.parametrize("source", ["hf", "megatron"])
+@pytest.mark.parametrize("load_mode", ["new", "resume", "finetune"])
+def test_dpo_initial_reference_and_resume_keep_separate_checkpoint_roles(
+    arguments_module, tmp_path, source, load_mode
+):
+    reference = tmp_path / "sft"
+    reference.mkdir()
+    marker = "config.json" if source == "hf" else "latest_checkpointed_iteration.txt"
+    (reference / marker).write_text("{}" if source == "hf" else "7")
+    resume = tmp_path / "dpo"
+    resume.mkdir()
+    (resume / "latest_checkpointed_iteration.txt").write_text("100")
+    args = _opd_args()
+    vars(args).update(
+        loss_type="dpo",
+        prompt_data=["/train.jsonl"],
+        use_dynamic_batch_size=True,
+        max_tokens_per_gpu=4096,
+        n_samples_per_prompt=1,
+        qkv_format="thd",
+        use_gloo_process_groups=True,
+        preference_max_length=1024,
+        preference_max_completion_length=512,
+        enable_weights_backuper=True,
+        sft_oversize_strategy="keep",
+        sft_oversize_custom_function_path=None,
+        dpo_reference_free=False,
+        ref_load=str(reference),
+        ref_ckpt_step=7 if source == "megatron" else None,
+        ckpt_step=100,
+        load=None if load_mode == "new" else str(resume if load_mode == "resume" else reference),
+        finetune=load_mode == "finetune",
+        no_load_optim=load_mode == "finetune",
+        no_load_rng=load_mode == "finetune",
+    )
+
+    arguments_module.slime_validate_args(args)
+
+    assert args.ref_load == str(reference)
+    assert args.load == str(resume if load_mode == "resume" else reference)
+    assert args.finetune is (load_mode != "resume")
+    assert args.no_load_optim is (load_mode != "resume")
+    assert args.no_load_rng is (load_mode != "resume")
+    assert args.dpo_reference_free is False
+    assert args.ckpt_step == (7 if source == "megatron" and load_mode == "new" else 100)

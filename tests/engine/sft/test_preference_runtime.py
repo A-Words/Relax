@@ -38,8 +38,6 @@ def _args(**overrides) -> Namespace:
         "dpo_beta": 0.1,
         "rollout_temperature": 1.0,
         "dpo_reference_free": False,
-        "dpo_reference_repository": "Qwen/Qwen3-0.6B",
-        "dpo_reference_revision": "fixed-revision",
         "ref_load": None,
         "ref_update_interval": None,
         "enable_weights_backuper": True,
@@ -73,8 +71,6 @@ def test_preference_mode_uses_loss_type():
         ({"lora_rank": 8}, "LoRA"),
         ({"hidden_dropout": 0.1}, "dropout"),
         ({"ref_update_interval": 10}, "frozen reference"),
-        ({"ref_load": "/tmp/ref"}, "do not use --ref-load"),
-        ({"dpo_reference_free": True, "ref_load": "/tmp/ref"}, "do not use --ref-load"),
         ({"dpo_beta": float("nan")}, "finite and positive"),
         ({"rollout_temperature": 0.8}, "rollout-temperature 1.0"),
         ({"rollout_temperature": float("nan")}, "rollout-temperature 1.0"),
@@ -124,6 +120,10 @@ def test_reference_free_dpo_does_not_require_ref_update_constraint():
     validate_preference_args(_args(dpo_reference_free=True, ref_update_interval=10))
 
 
-def test_standard_dpo_requires_explicit_reference_repository_and_revision():
-    with pytest.raises(ValueError, match="dpo-reference-repository"):
-        validate_preference_args(_args(dpo_reference_repository=None))
+@pytest.mark.parametrize("ref_load", [None, "/models/local-sft"])
+@pytest.mark.parametrize("reference_free", [False, True])
+def test_dpo_accepts_local_reference_without_repository_metadata(ref_load, reference_free):
+    args = _args(ref_load=ref_load, dpo_reference_free=reference_free)
+    validate_preference_args(args)
+    assert args.ref_load == ref_load
+    assert args.dpo_reference_free is reference_free

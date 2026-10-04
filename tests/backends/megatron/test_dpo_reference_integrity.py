@@ -3,10 +3,8 @@
 """Frozen-reference checksum, optimizer and sidecar tests."""
 
 import ast
-import hashlib
 import json
 import os
-import sys
 import types
 from argparse import Namespace
 from contextlib import nullcontext
@@ -17,14 +15,13 @@ import pytest
 import torch
 
 from relax.backends.megatron.reference_integrity import (
-    REFERENCE_LOADER_MODE,
     DPOReferenceIdentity,
     canonical_tensor_sha256,
     read_reference_identity,
     reference_identity_path,
-    resolve_dpo_reference_checkpoint,
     write_reference_identity,
 )
+from relax.utils.model_source import is_model_source_alias
 from relax.utils.training import tensor_backper
 
 
@@ -54,7 +51,7 @@ def test_reference_identity_sidecar_is_required_and_rejects_schema_damage(tmp_pa
     path = tmp_path / "relax_dpo_reference.json"
     with pytest.raises(FileNotFoundError):
         read_reference_identity(path)
-    identity = DPOReferenceIdentity(1, "repo", "revision", "loader", "a" * 64)
+    identity = DPOReferenceIdentity(2, "a" * 64)
     write_reference_identity(path, identity)
     assert read_reference_identity(path) == identity
     payload = identity.to_dict()
@@ -64,7 +61,7 @@ def test_reference_identity_sidecar_is_required_and_rejects_schema_damage(tmp_pa
         read_reference_identity(path)
 
 
-def test_reference_identity_reads_legacy_probe_fields_and_omits_them_on_write(tmp_path):
+def test_reference_identity_reads_legacy_source_fields_and_upgrades_on_write(tmp_path):
     path = tmp_path / "relax_dpo_reference.json"
     payload = {
         "schema_version": 1,
@@ -77,207 +74,16 @@ def test_reference_identity_reads_legacy_probe_fields_and_omits_them_on_write(tm
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
     identity = read_reference_identity(path)
-    assert identity == DPOReferenceIdentity(1, "repo", "revision", "loader", "a" * 64)
+    assert identity == DPOReferenceIdentity(1, "a" * 64)
     write_reference_identity(path, identity)
-    assert json.loads(path.read_text()) == {
-        key: value for key, value in payload.items() if key not in {"probe_sha256", "probe_manifest"}
-    }
-
-
-def _write_local_download_metadata(checkpoint, filename, revision):
-    source = checkpoint / filename
-    metadata = checkpoint / ".cache" / "huggingface" / "download" / f"{filename}.metadata"
-    metadata.parent.mkdir(parents=True, exist_ok=True)
-    content = source.read_bytes()
-    if source.suffix == ".safetensors":
-        etag = hashlib.sha256(content).hexdigest()
-    else:
-        etag = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
-    metadata.write_text(f"{revision}\n{etag}\n{source.stat().st_mtime}\n", encoding="utf-8")
-
-
-def test_resolve_dpo_reference_checkpoint_uses_the_pinned_configured_local_snapshot(monkeypatch, tmp_path):
-    revision = "a" * 40
-    snapshot = tmp_path / f"Qwen3-0.6B-{revision}"
-    snapshot.mkdir()
-    (snapshot / "config.json").write_text("{}", encoding="utf-8")
-    (snapshot / "model.safetensors").write_bytes(b"weights")
-    _write_local_download_metadata(snapshot, "config.json", revision)
-    _write_local_download_metadata(snapshot, "model.safetensors", revision)
-    observed = {}
-
-    def snapshot_download(**kwargs):
-        observed.update(kwargs)
-        return str(snapshot)
-
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        types.SimpleNamespace(snapshot_download=snapshot_download),
-    )
-    assert resolve_dpo_reference_checkpoint("org/model", revision, str(snapshot)) == str(snapshot.resolve())
-    assert observed == {
-        "repo_id": "org/model",
-        "revision": revision,
-        "local_dir": str(snapshot.resolve()),
-        "local_files_only": True,
-    }
-
-
-def test_resolve_dpo_reference_checkpoint_rejects_missing_local_snapshot(monkeypatch, tmp_path):
-    checkpoint = tmp_path / "checkpoint"
-    checkpoint.mkdir()
-
-    def snapshot_download(**_kwargs):
-        raise OSError("not cached")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        types.SimpleNamespace(snapshot_download=snapshot_download),
-    )
-    with pytest.raises(RuntimeError, match="hf download org/model --revision"):
-        resolve_dpo_reference_checkpoint("org/model", "a" * 40, str(checkpoint))
-
-
-def test_resolve_dpo_reference_checkpoint_rejects_different_resolved_directory(monkeypatch, tmp_path):
-    checkpoint = tmp_path / "checkpoint"
-    other = tmp_path / "other"
-    checkpoint.mkdir()
-    other.mkdir()
-    (checkpoint / "config.json").write_text("{}", encoding="utf-8")
-    (other / "config.json").write_text("{}", encoding="utf-8")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        types.SimpleNamespace(snapshot_download=lambda **_kwargs: str(other)),
-    )
-    with pytest.raises(RuntimeError, match="different from --hf-checkpoint"):
-        resolve_dpo_reference_checkpoint("org/model", "a" * 40, str(checkpoint))
-
-
-def test_resolve_dpo_reference_checkpoint_rejects_missing_pinned_local_metadata(monkeypatch, tmp_path):
-    revision = "a" * 40
-    checkpoint = tmp_path / "checkpoint"
-    checkpoint.mkdir()
-    (checkpoint / "config.json").write_text("{}", encoding="utf-8")
-    (checkpoint / "model.safetensors").write_bytes(b"weights")
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        types.SimpleNamespace(snapshot_download=lambda **_kwargs: str(checkpoint)),
-    )
-    with pytest.raises(RuntimeError, match="missing valid Hugging Face local-dir metadata"):
-        resolve_dpo_reference_checkpoint("org/model", revision, str(checkpoint))
-
-
-def test_resolve_dpo_reference_checkpoint_rejects_mismatched_file_metadata(monkeypatch, tmp_path):
-    revision = "a" * 40
-    checkpoint = tmp_path / "checkpoint"
-    checkpoint.mkdir()
-    (checkpoint / "config.json").write_text("{}", encoding="utf-8")
-    _write_local_download_metadata(checkpoint, "config.json", "c" * 40)
-    (checkpoint / "model.safetensors").write_bytes(b"weights")
-    _write_local_download_metadata(checkpoint, "model.safetensors", revision)
-
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        types.SimpleNamespace(snapshot_download=lambda **_kwargs: str(checkpoint)),
-    )
-    with pytest.raises(RuntimeError, match="metadata does not match the pinned revision"):
-        resolve_dpo_reference_checkpoint("org/model", revision, str(checkpoint))
-
-
-def test_resolve_dpo_reference_checkpoint_rejects_replaced_file_with_restored_mtime(monkeypatch, tmp_path):
-    revision = "a" * 40
-    checkpoint = tmp_path / "checkpoint"
-    checkpoint.mkdir()
-    config = checkpoint / "config.json"
-    config.write_text("{}", encoding="utf-8")
-    _write_local_download_metadata(checkpoint, "config.json", revision)
-    weights = checkpoint / "model.safetensors"
-    weights.write_bytes(b"weights")
-    original_stat = weights.stat()
-    _write_local_download_metadata(checkpoint, "model.safetensors", revision)
-    weights.write_bytes(b"changed")
-    os.utime(weights, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
-
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        types.SimpleNamespace(snapshot_download=lambda **_kwargs: str(checkpoint)),
-    )
-    with pytest.raises(RuntimeError, match="contents do not match its Hugging Face ETag"):
-        resolve_dpo_reference_checkpoint("org/model", revision, str(checkpoint))
-
-
-def test_resolve_dpo_reference_checkpoint_rejects_snapshot_without_supported_weights(monkeypatch, tmp_path):
-    revision = "a" * 40
-    checkpoint = tmp_path / "checkpoint"
-    checkpoint.mkdir()
-    (checkpoint / "config.json").write_text("{}", encoding="utf-8")
-    _write_local_download_metadata(checkpoint, "config.json", revision)
-
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        types.SimpleNamespace(snapshot_download=lambda **_kwargs: str(checkpoint)),
-    )
-    with pytest.raises(RuntimeError, match="no supported model weights or index"):
-        resolve_dpo_reference_checkpoint("org/model", revision, str(checkpoint))
-
-
-def test_resolve_dpo_reference_checkpoint_accepts_complete_safetensors_index(monkeypatch, tmp_path):
-    revision = "a" * 40
-    checkpoint = tmp_path / "checkpoint"
-    checkpoint.mkdir()
-    (checkpoint / "config.json").write_text("{}", encoding="utf-8")
-    index_name = "model.safetensors.index.json"
-    shard_names = ("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors")
-    weight_map = {f"layer.{index}.weight": shard for index, shard in enumerate(shard_names)}
-    (checkpoint / index_name).write_text(json.dumps({"weight_map": weight_map}), encoding="utf-8")
-    for shard_name in shard_names:
-        (checkpoint / shard_name).write_bytes(shard_name.encode())
-    for filename in ("config.json", index_name, *shard_names):
-        _write_local_download_metadata(checkpoint, filename, revision)
-
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        types.SimpleNamespace(snapshot_download=lambda **_kwargs: str(checkpoint)),
-    )
-    assert resolve_dpo_reference_checkpoint("org/model", revision, str(checkpoint)) == str(checkpoint.resolve())
-
-
-def test_resolve_dpo_reference_checkpoint_rejects_missing_indexed_shard_and_metadata(monkeypatch, tmp_path):
-    revision = "a" * 40
-    checkpoint = tmp_path / "checkpoint"
-    checkpoint.mkdir()
-    (checkpoint / "config.json").write_text("{}", encoding="utf-8")
-    index_name = "model.safetensors.index.json"
-    shard_name = "model-00001-of-00001.safetensors"
-    (checkpoint / index_name).write_text(json.dumps({"weight_map": {"model.weight": shard_name}}), encoding="utf-8")
-    (checkpoint / shard_name).write_bytes(b"weights")
-    for filename in ("config.json", index_name, shard_name):
-        _write_local_download_metadata(checkpoint, filename, revision)
-    (checkpoint / shard_name).unlink()
-    (checkpoint / ".cache" / "huggingface" / "download" / f"{shard_name}.metadata").unlink()
-
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        types.SimpleNamespace(snapshot_download=lambda **_kwargs: str(checkpoint)),
-    )
-    with pytest.raises(RuntimeError, match="weight index points to a missing shard"):
-        resolve_dpo_reference_checkpoint("org/model", revision, str(checkpoint))
+    assert json.loads(path.read_text()) == {"schema_version": 2, "parameter_sha256": "a" * 64}
 
 
 @pytest.fixture
 def reference_actor_methods():
     """Load the real lifecycle methods without importing the GPU actor
     stack."""
+    checkpoint_module = pytest.importorskip("relax.backends.megatron.checkpoint")
     source = Path(__file__).resolve().parents[3] / "relax/backends/megatron/actor.py"
     tree = ast.parse(source.read_text())
     actor = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "MegatronTrainRayActor")
@@ -293,7 +99,10 @@ def reference_actor_methods():
         method.decorator_list = []
     namespace = {
         "DPOReferenceIdentity": DPOReferenceIdentity,
-        "REFERENCE_LOADER_MODE": REFERENCE_LOADER_MODE,
+        "os": os,
+        "is_model_source_alias": is_model_source_alias,
+        "is_megatron_checkpoint": checkpoint_module.is_megatron_checkpoint,
+        "_checkpoint_iteration_dir": checkpoint_module._checkpoint_iteration_dir,
         "canonical_tensor_sha256": canonical_tensor_sha256,
         "reference_identity_path": reference_identity_path,
         "write_reference_identity": write_reference_identity,
@@ -303,8 +112,26 @@ def reference_actor_methods():
     return type("ReferenceActor", (), {name: namespace[name] for name in method_names}), namespace
 
 
-@pytest.mark.parametrize("outcome", ["success", "loader_failure", "identity_mismatch"])
-def test_reference_rebuild_preserves_actor_and_optimizer(monkeypatch, reference_actor_methods, outcome):
+@pytest.mark.parametrize(
+    ("source", "ref_ckpt_step", "outcome", "schema_version"),
+    [
+        ("hf", None, "success", None),
+        ("hf", 7, "success", 1),
+        ("hf", None, "success", 2),
+        ("hf", 7, "loader_failure", None),
+        ("hf", None, "identity_mismatch", 1),
+        ("hf", 7, "identity_mismatch", 2),
+        ("megatron", None, "success", None),
+        ("megatron", 7, "success", 1),
+        ("megatron", 0, "success", 2),
+        ("iteration", None, "success", None),
+        ("megatron", None, "loader_failure", None),
+        ("megatron", 7, "identity_mismatch", 1),
+    ],
+)
+def test_reference_rebuild_preserves_actor_and_optimizer(
+    monkeypatch, tmp_path, reference_actor_methods, source, ref_ckpt_step, outcome, schema_version
+):
     actor_type, namespace = reference_actor_methods
     parameter = torch.nn.Parameter(torch.tensor([1.0]))
     optimizer = torch.optim.Adam([parameter], lr=0.1)
@@ -315,15 +142,32 @@ def test_reference_rebuild_preserves_actor_and_optimizer(monkeypatch, reference_
     monkeypatch.setattr(tensor_backper, "_NON_BLOCKING", False)
     monkeypatch.setattr(tensor_backper.device_module, "synchronize", lambda: None)
 
+    reference_root = tmp_path / "reference"
+    reference_root.mkdir()
+    reference_path = reference_root
+    expected_step = ref_ckpt_step
+    if source == "hf":
+        (reference_root / "config.json").write_text("{}", encoding="utf-8")
+    else:
+        latest = "0" if ref_ckpt_step == 0 else "3"
+        (reference_root / "latest_checkpointed_iteration.txt").write_text(latest, encoding="utf-8")
+        expected_step = 7 if source == "iteration" else 3 if ref_ckpt_step is None else ref_ckpt_step
+        iteration_dir = reference_root / f"iter_{expected_step:07d}"
+        iteration_dir.mkdir()
+        (iteration_dir / "common.pt").write_bytes(b"reference checkpoint")
+        if source == "iteration":
+            reference_path = iteration_dir
     instance = actor_type()
     instance.args = Namespace(
-        load="checkpoint",
+        load=str(tmp_path / "actor-checkpoint"),
+        hf_checkpoint=str(reference_path),
+        ckpt_step=123,
+        ref_ckpt_step=ref_ckpt_step,
+        non_persistent_ckpt_type="global",
         no_load_optim=False,
         no_load_rng=False,
         finetune=False,
         megatron_to_hf_mode="bridge",
-        dpo_reference_repository="repo",
-        dpo_reference_revision="revision",
     )
     original_args = vars(instance.args).copy()
     instance.model = [object()]
@@ -332,10 +176,18 @@ def test_reference_rebuild_preserves_actor_and_optimizer(monkeypatch, reference_
     instance.weights_backuper.backup("actor")
     instance._active_model_tag = "actor"
     instance._expected_dpo_reference_identity = None
-    if outcome == "identity_mismatch":
-        instance._expected_dpo_reference_identity = DPOReferenceIdentity(
-            1, "repo", "revision", REFERENCE_LOADER_MODE, "a" * 64
-        )
+    if schema_version is not None:
+        digest = canonical_tensor_sha256([("weight", torch.tensor([99.0]))])
+        payload = {"schema_version": schema_version, "parameter_sha256": digest}
+        if outcome == "identity_mismatch":
+            payload["parameter_sha256"] = "a" * 64
+        if schema_version == 1:
+            payload.update(
+                repository="old/repo", revision="old-revision", loader_mode="old-loader", probe_sha256="b" * 64
+            )
+        sidecar = tmp_path / "relax_dpo_reference.json"
+        sidecar.write_text(json.dumps(payload), encoding="utf-8")
+        instance._expected_dpo_reference_identity = read_reference_identity(sidecar)
     instance._assert_dp_reference_digest_equal = Mock()
 
     def load_reference(model, loaded_optimizer, scheduler, **kwargs):
@@ -346,7 +198,9 @@ def test_reference_rebuild_preserves_actor_and_optimizer(monkeypatch, reference_
             instance.args.no_load_optim,
             instance.args.no_load_rng,
             instance.args.finetune,
-        ) == ("hf-path", True, True, True)
+        ) == (str(reference_root), True, True, True)
+        assert instance.args.ckpt_step == expected_step
+        assert instance.args.non_persistent_ckpt_type is None
         parameter.data.fill_(99)
         if outcome == "loader_failure":
             raise RuntimeError("injected loader failure")
@@ -359,7 +213,7 @@ def test_reference_rebuild_preserves_actor_and_optimizer(monkeypatch, reference_
         "identity_mismatch": "frozen-reference identity mismatch",
     }
     with pytest.raises(RuntimeError, match=errors[outcome]) if outcome in errors else nullcontext():
-        instance._rebuild_dpo_reference("hf-path")
+        instance._rebuild_dpo_reference(str(reference_path))
     torch.testing.assert_close(parameter, actor_value)
     assert instance._active_model_tag == "actor"
     assert vars(instance.args) == original_args
@@ -373,7 +227,69 @@ def test_reference_rebuild_preserves_actor_and_optimizer(monkeypatch, reference_
         torch.testing.assert_close(reference, torch.tensor([99.0]))
         parameter.data.add_(1)
         torch.testing.assert_close(reference, torch.tensor([99.0]))
+        assert instance._dpo_reference_identity.schema_version == 2
         assert instance._dpo_reference_identity.parameter_sha256 == canonical_tensor_sha256([("weight", reference)])
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "missing",
+        "empty",
+        "missing_iteration",
+        "empty_iteration",
+        "iteration_without_tracker",
+        "zero_with_other_tracker",
+        "release_with_step",
+    ],
+)
+def test_reference_rebuild_rejects_missing_or_ambiguous_checkpoint(tmp_path, reference_actor_methods, source):
+    actor_type, namespace = reference_actor_methods
+    reference_path = tmp_path / "reference"
+    ref_ckpt_step = None
+    error = "existing Hugging Face or Megatron checkpoint"
+    if source != "missing":
+        reference_path.mkdir()
+    if source in {"missing_iteration", "empty_iteration"}:
+        (reference_path / "latest_checkpointed_iteration.txt").write_text("7", encoding="utf-8")
+        if source == "empty_iteration":
+            (reference_path / "iter_0000007").mkdir()
+        error = "checkpoint iteration is missing or empty"
+    elif source == "iteration_without_tracker":
+        reference_path /= "iter_0000007"
+        reference_path.mkdir()
+        (reference_path / "common.pt").write_bytes(b"reference checkpoint")
+        error = "checkpoint root is missing its tracker"
+    elif source in {"zero_with_other_tracker", "release_with_step"}:
+        ref_ckpt_step = 0 if source == "zero_with_other_tracker" else 7
+        latest = "3" if source == "zero_with_other_tracker" else "release"
+        (reference_path / "latest_checkpointed_iteration.txt").write_text(latest, encoding="utf-8")
+        iteration_dir = reference_path / ("iter_0000000" if ref_ckpt_step == 0 else "release")
+        iteration_dir.mkdir()
+        (iteration_dir / "common.pt").write_bytes(b"reference checkpoint")
+        error = "Megatron cannot select this reference step"
+    instance = actor_type()
+    instance.args = Namespace(
+        load=str(tmp_path / "actor-checkpoint"),
+        ckpt_step=123,
+        ref_ckpt_step=ref_ckpt_step,
+        non_persistent_ckpt_type="global",
+        no_load_optim=False,
+        no_load_rng=False,
+        finetune=False,
+    )
+    original_args = vars(instance.args).copy()
+    instance.model = [object()]
+    instance._active_model_tag = "actor"
+    instance.weights_backuper = Mock(backup_tags={"actor"})
+    namespace["load_checkpoint"] = Mock()
+
+    with pytest.raises(ValueError, match=error):
+        instance._rebuild_dpo_reference(str(reference_path))
+
+    namespace["load_checkpoint"].assert_not_called()
+    assert vars(instance.args) == original_args
+    assert instance._active_model_tag == "actor"
 
 
 def test_save_model_persists_reference_identity(tmp_path, reference_actor_methods):
@@ -391,7 +307,7 @@ def test_save_model_persists_reference_identity(tmp_path, reference_actor_method
     instance.role = "actor"
     instance.model = [object()]
     instance.optimizer = instance.opt_param_scheduler = None
-    instance._dpo_reference_identity = DPOReferenceIdentity(1, "repo", "revision", REFERENCE_LOADER_MODE, "a" * 64)
+    instance._dpo_reference_identity = DPOReferenceIdentity(2, "a" * 64)
     namespace.update(
         dist=types.SimpleNamespace(get_rank=lambda **kwargs: 0, barrier=lambda **kwargs: None),
         get_gloo_group=lambda: None,
@@ -402,10 +318,4 @@ def test_save_model_persists_reference_identity(tmp_path, reference_actor_method
     namespace["save"].assert_called_once_with(7, instance.model, None, None, lora_only=False)
     path = reference_identity_path(tmp_path, 7)
     assert read_reference_identity(path) == instance._dpo_reference_identity
-    assert set(json.loads(path.read_text())) == {
-        "schema_version",
-        "repository",
-        "revision",
-        "loader_mode",
-        "parameter_sha256",
-    }
+    assert json.loads(path.read_text()) == {"schema_version": 2, "parameter_sha256": "a" * 64}

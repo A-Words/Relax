@@ -39,7 +39,7 @@ hf download Qwen/Qwen3-0.6B \
   --local-dir "${HF_CHECKPOINT}"
 ```
 
-Keep the complete download directory, including `.cache/huggingface`. DPO uses its download metadata to check the reference model version.
+You can also set `HF_CHECKPOINT` to a local Hugging Face-format SFT model directory containing the model weights, configuration, and tokenizer.
 
 ## Start DPO training
 
@@ -57,7 +57,9 @@ Run the [DPO training script](../../../scripts/training/dpo/run-qwen3-0.6B-ultra
 NUM_GPUS=1 bash scripts/training/dpo/run-qwen3-0.6B-ultrafeedback-1xgpu.sh
 ```
 
-The script selects DPO with `--loss-type dpo` and uses a frozen copy of the downloaded model as the reference model. It saves checkpoints to `${SAVE_DIR}/${EXP_NAME}` and writes logs to `log/`.
+The script selects DPO with `--loss-type dpo` and sets `--ref-load "${HF_CHECKPOINT}"` to load the frozen reference. In a custom training command, omitting `--ref-load` uses `--hf-checkpoint` instead. The script saves checkpoints to `${SAVE_DIR}/${EXP_NAME}` and writes logs to `log/`.
+
+To start DPO from a native Megatron SFT checkpoint, set `--ref-load /checkpoints/sft` in your training command and omit `--load`; Relax initializes the policy from the model weights and starts a new run. Keep `--hf-checkpoint` pointing to matching Hugging Face configuration and tokenizer files. Use `--ref-ckpt-step` to select the reference iteration, or let the checkpoint tracker select it. If you explicitly set `--load` to the SFT checkpoint, also add `--finetune`.
 
 Set these environment variables before you run the script to change its defaults:
 
@@ -77,7 +79,9 @@ One pair counts as one training sample. Relax keeps its two answers together whe
 
 Run the same script with the same paths and training settings. It loads the checkpoint from `${SAVE_DIR}/${EXP_NAME}` and continues from the saved step. Use a different `EXP_NAME` to start a separate run.
 
-Keep the full checkpoint directory, including `relax_dpo_reference.json` inside each saved iteration. DPO uses this file to check that the reference model has not changed.
+For a custom training command, set `--load` to the DPO checkpoint directory and resume without `--finetune`. Keep `--ref-load` pointing to the original reference checkpoint, or keep the same `--hf-checkpoint` if `--ref-load` was omitted.
+
+Keep the full checkpoint directory, including `relax_dpo_reference.json` inside each saved iteration. On resume, DPO compares a hash of the loaded reference weights with the saved hash and raises an error if they differ.
 
 ## Read the training metrics
 
@@ -98,7 +102,7 @@ DPO records these metrics under `train/dpo/`:
 - Keep `--task-type causal_lm` with the preference objective.
 - Use ordinary CPU data prefetch if needed. Asynchronous prepacking, MTP, chunked logits, and LoRA are not supported.
 
-For reference-free DPO, add `--dpo-reference-free` to the training command. Remove `--dpo-reference-repository` and `--dpo-reference-revision` from that command. Reference-free training does not record reference log-probabilities.
+For reference-free DPO, add `--dpo-reference-free` to the training command. This mode does not load a frozen reference or record reference log-probabilities.
 
 ## Next steps
 

@@ -26,14 +26,13 @@ ray job submit ${RAY_NO_WAIT:+--no-wait} --address="http://127.0.0.1:8265" \
     --resource '{"sft":[1,0],"actor":[1,1]}' \
     --loss-type dpo \
     --dpo-beta 0.1 \
-    --dpo-reference-repository Qwen/Qwen3-0.6B \
-    --dpo-reference-revision "${MODEL_REVISION}" \
     --prompt-data "${PROMPT_DATA}" \
     --input-key prompt \
     --preference-pair-id-key prompt_id \
     --preference-max-length 1024 \
     --preference-max-completion-length 512 \
     --hf-checkpoint "${HF_CHECKPOINT}" \
+    --ref-load "${HF_CHECKPOINT}" \
     --megatron-to-hf-mode bridge \
     --enable-weights-backuper \
     --save "${SAVE_DIR}/${EXP_NAME}" \
