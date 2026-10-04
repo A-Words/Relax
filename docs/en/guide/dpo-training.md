@@ -67,13 +67,13 @@ Set these environment variables before you run the script to change its defaults
 | --- | --- | --- |
 | `NUM_ROLLOUT` | `200` | Total optimizer steps, including completed steps when you resume. |
 | `GLOBAL_BATCH_SIZE` | `32` | Answer pairs per optimizer step, across all GPUs. |
-| `MAX_TOKENS_PER_GPU` | `8192` | Tokens per micro-batch, including both copies of the prompt and both answers. |
+| `MAX_TOKENS_PER_GPU` | `8192` | Token budget per micro-batch, including both copies of the prompt and both answers. |
 | `LR` | `5e-7` | Learning rate. |
 | `SAVE_INTERVAL` | `50` | Steps between checkpoint saves. |
 
-The script sets `--dpo-beta 0.1`. It limits each prompt and answer to 1,024 tokens in total, with at most 512 tokens in the answer. It truncates longer inputs. To change these settings, edit the script.
+The script sets `--dpo-beta 0.1`, `--preference-max-length 1024`, and `--preference-max-completion-length 512`. These explicit length limits truncate each prompt and answer to at most 1,024 tokens in total, with at most 512 tokens in the answer. To change these settings, edit the script.
 
-One pair counts as one training sample. Relax keeps its two answers together when it divides work across GPUs and micro-batches.
+One pair counts as one training sample. Relax keeps its two answers together when it divides work across GPUs and micro-batches. After applying the explicit length limits, the default `--sft-oversize-strategy keep` preserves a pair that exceeds the token budget and places it alone in a micro-batch. To truncate or skip such pairs, explicitly choose another [oversize strategy](./configuration.md#oversize-sample-handling).
 
 ## Resume DPO training
 

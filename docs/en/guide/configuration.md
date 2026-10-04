@@ -424,7 +424,7 @@ Use `--loss-type dpo` for DPO. Keep `--task-type causal_lm`; the loss type selec
 | `--dpo-beta` | float | 0.1 | DPO only. Finite, positive scale for the policy/reference log-probability margin. |
 | `--dpo-reference-free` | flag | False | DPO only. Explicitly enable reference-free logistic DPO. Missing or invalid reference configuration raises an error instead of enabling this mode. |
 
-`--global-batch-size` counts pairs. `--max-tokens-per-gpu` counts both complete branches, so it counts the shared prompt twice; this pair budget can cause further truncation during preprocessing. Preference training does not support `--sft-predict-interval`, `--sft-chunked-logits`, or `--sft-async-prepack`.
+`--global-batch-size` counts pairs. `--max-tokens-per-gpu` counts both complete branches, so it counts the shared prompt twice. After the explicit length limits above, the default `--sft-oversize-strategy keep` preserves any pair that exceeds this budget and places it alone in a micro-batch. See [Oversize Sample Handling](#oversize-sample-handling) for other strategies. Preference training does not support `--sft-predict-interval`, `--sft-chunked-logits`, or `--sft-async-prepack`.
 
 ### Streaming Dataset Prefetch
 
@@ -477,6 +477,10 @@ How the SFT producer handles samples whose tokenized + media-expanded length exc
 |-----------|------|---------|---------|-------------|
 | `--sft-oversize-strategy` | str | keep | `skip`, `keep`, `truncate_left`, `truncate_right`, `custom` | `skip` drops the sample; `keep` returns it unchanged (may OOM downstream); `truncate_left` keeps the last `capacity` tokens; `truncate_right` keeps the first `capacity` tokens; `custom` delegates to `--sft-oversize-custom-function-path`. ⚠ Truncating multimodal samples in-place may misalign `multimodal_train_inputs` — use `custom` if you also need to trim media inputs. |
 | `--sft-oversize-custom-function-path` | str | None | - | Required when `--sft-oversize-strategy custom`. Importable path to a function with signature `def truncate(tokens, loss_mask, capacity, idx) -> (tokens, loss_mask) \| None`. Returning `None` is treated as `skip`. |
+
+Preference training uses these same options after applying `--preference-max-length` and `--preference-max-completion-length`. The capacity counts both branches together: `keep` preserves the pair in its own micro-batch, while `skip` drops the whole pair.
+
+For `truncate_left`, `truncate_right`, and `custom`, Relax divides the pair budget between the two branches. Left truncation keeps a common prompt suffix; right truncation keeps the start of each branch. A custom function receives each oversized branch and its allocated capacity; returning `None` for either branch drops the whole pair. Processing raises an error if a branch has no supervised answer tokens, the two answers become identical, or their prompts differ.
 
 ::: tip Related dataset flags
 SFT also uses the general dataset flags from [Data Configuration](#data-configuration), in particular `--input-key`, `--label-key`, `--conversation-key-map` (for sharegpt-style datasets), `--multimodal-keys`, `--system-prompt`, and `--tool-key`.

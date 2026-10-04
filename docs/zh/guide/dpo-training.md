@@ -67,13 +67,13 @@ NUM_GPUS=1 bash scripts/training/dpo/run-qwen3-0.6B-ultrafeedback-1xgpu.sh
 | --- | --- | --- |
 | `NUM_ROLLOUT` | `200` | 总优化步数，续训时包含已完成的步数。 |
 | `GLOBAL_BATCH_SIZE` | `32` | 所有 GPU 每个优化步共处理的样本对数。 |
-| `MAX_TOKENS_PER_GPU` | `8192` | 每个微批次的 token 上限，包含两份提示词及各自的回答。 |
+| `MAX_TOKENS_PER_GPU` | `8192` | 每个微批次的 token 预算，包含两份提示词及各自的回答。 |
 | `LR` | `5e-7` | 学习率。 |
 | `SAVE_INTERVAL` | `50` | 每隔多少步保存检查点。 |
 
-脚本设置了 `--dpo-beta 0.1`。提示词和单条回答加起来最多保留 1,024 个 token，其中回答最多保留 512 个 token。超出部分会被截断。要调整这些设置，请修改训练脚本。
+脚本设置了 `--dpo-beta 0.1`、`--preference-max-length 1024` 和 `--preference-max-completion-length 512`。这两项显式长度限制会截断过长输入：提示词和单条回答加起来最多保留 1,024 个 token，其中回答最多保留 512 个 token。要调整这些设置，请修改训练脚本。
 
-一对回答算一个训练样本。Relax 在 GPU 之间分配数据、组合微批次时，会把同一对回答放在一起。
+一对回答算一个训练样本。Relax 在 GPU 之间分配数据、组合微批次时，会把同一对回答放在一起。应用显式长度限制后，默认的 `--sft-oversize-strategy keep` 会保留仍超出 token 预算的样本对，并将其单独放入一个微批次。若要截断或跳过这类样本对，请显式选择其他[超长样本处理策略](./configuration.md#超长样本处理)。
 
 ## 恢复 DPO 训练
 

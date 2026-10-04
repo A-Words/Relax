@@ -717,11 +717,13 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default="keep",
                 choices=["skip", "keep", "truncate_left", "truncate_right", "custom"],
                 help=(
-                    "How to handle SFT samples whose (expanded) length exceeds per-GPU capacity. "
+                    "How to handle offline samples whose (expanded) length exceeds per-GPU capacity. "
                     "All branches emit a WARNING log per oversized sample. "
                     "`skip` drops the sample; `keep` (default) returns it unchanged (may OOM downstream); "
                     "`truncate_left` keeps the last `capacity` tokens; `truncate_right` keeps the first "
                     "`capacity` tokens; `custom` delegates to --sft-oversize-custom-function-path. "
+                    "For preference pairs, split the budget evenly between branches and give unused capacity "
+                    "from a shorter branch to the other branch; keep or skip always applies to the whole pair. "
                     "Note: truncating multimodal samples in-place may misalign multimodal_train_inputs — "
                     "use `custom` if you need to also trim media inputs."
                 ),
@@ -733,7 +735,8 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Required when --sft-oversize-strategy custom. Importable path to a function with "
                     "signature `def truncate(tokens, loss_mask, capacity, idx) -> (tokens, loss_mask) | None`. "
-                    "Returning None is treated as skip."
+                    "Returning None skips the sample. For preference data, called per oversized branch; "
+                    "returning None skips the whole pair."
                 ),
             )
             parser.add_argument(
@@ -1515,7 +1518,8 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "The maximum number of tokens per GPU for dynamic batch size. "
                     "For preference objectives, counts both branches of each pair, "
-                    "including the shared prompt twice. This budget can further truncate pairs during preprocessing. "
+                    "including the shared prompt twice. Oversize pairs are kept by default in separate microbatches; "
+                    "use --sft-oversize-strategy to skip or truncate them. "
                     "Note that when enabling context parallel (CP), the max tokens per gpu should be around "
                     "`max_response_len // cp_size` instead of `max_response_len`."
                 ),

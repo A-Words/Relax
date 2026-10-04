@@ -4,7 +4,7 @@
 
 import hashlib
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,7 +12,7 @@ import torch
 
 from relax.engine.sft.dataset.chat_template import render_with_loss_mask
 from relax.engine.sft.dataset.sample import CanonicalMessage, CanonicalSample
-from relax.engine.sft.dataset.streaming import _build_reader
+from relax.engine.sft.dataset.streaming import _build_reader, apply_oversize_strategy
 from relax.utils.data.streaming_dataset import IndexManager, PrefetchBuffer
 from relax.utils.logging_utils import get_logger
 
@@ -186,7 +186,6 @@ def _truncate_pair(
     pair_id: str,
     max_length: int,
     max_completion_length: int,
-    pair_capacity: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     chosen_completion = chosen_completion[:max_completion_length]
     rejected_completion = rejected_completion[:max_completion_length]
@@ -201,21 +200,6 @@ def _truncate_pair(
         )
     prompt = prompt[-prompt_budget:] if prompt_budget else prompt[:0]
 
-    def total() -> int:
-        return 2 * prompt.numel() + chosen_completion.numel() + rejected_completion.numel()
-
-    while total() > pair_capacity:
-        if chosen_completion.numel() >= rejected_completion.numel() and chosen_completion.numel() > 1:
-            chosen_completion = chosen_completion[:-1]
-        elif rejected_completion.numel() > 1:
-            rejected_completion = rejected_completion[:-1]
-        elif prompt.numel() > 0:
-            prompt = prompt[1:]
-        else:
-            raise _PreferenceRowError(
-                "oversize",
-                f"preference pair {pair_id!r} cannot fit pair capacity {pair_capacity} while retaining both completions",
-            )
     return prompt.contiguous(), chosen_completion.contiguous(), rejected_completion.contiguous()
 
 
@@ -236,6 +220,8 @@ class PreferenceStreamingDataset:
         max_length: int = 1024,
         max_completion_length: int = 512,
         pair_capacity: int | None = None,
+        oversize_strategy: str = "keep",
+        oversize_custom_fn: Callable[..., tuple[torch.Tensor, torch.Tensor] | None] | None = None,
         seed: int = 42,
         prefetch_max_cached: int = 256,
         prefetch_chunk_size: int = 32,
@@ -244,6 +230,12 @@ class PreferenceStreamingDataset:
     ) -> None:
         if max_length <= 0 or max_completion_length <= 0:
             raise ValueError("preference length limits must be positive")
+        if oversize_strategy not in {"keep", "skip", "truncate_left", "truncate_right", "custom"}:
+            raise ValueError(f"unknown oversize strategy: {oversize_strategy!r}")
+        if oversize_strategy == "custom" and oversize_custom_fn is None:
+            raise ValueError("oversize_strategy='custom' requires oversize_custom_fn")
+        self.oversize_strategy = oversize_strategy
+        self.oversize_custom_fn = oversize_custom_fn
         self.reader = _build_reader(path)
         self.index_manager = IndexManager(len(self.reader), seed=seed)
         self.tokenizer = tokenizer
@@ -309,7 +301,8 @@ class PreferenceStreamingDataset:
         indices = tuple(indices)
         if any(not isinstance(index, int) or index < 0 or index >= len(self.reader) for index in indices):
             raise ValueError(f"row indices must be integers in [0, {len(self.reader)})")
-        return [self.get_processed_pair(index) for index in indices]
+        pairs = (self.get_processed_pair(index) for index in indices)
+        return [pair for pair in pairs if pair is not None]
 
     def shuffle(self, epoch_id: int, position: int = 0) -> None:
         self.index_manager.shuffle(epoch_id)
@@ -335,7 +328,7 @@ class PreferenceStreamingDataset:
             source_name=self.source_name,
         )
 
-    def get_processed_pair(self, idx: int) -> ProcessedPreferencePair:
+    def get_processed_pair(self, idx: int) -> ProcessedPreferencePair | None:
         try:
             return self._get_processed_pair(idx)
         except PreferenceDataError:
@@ -357,7 +350,7 @@ class PreferenceStreamingDataset:
             )
             raise error from exc
 
-    def _get_processed_pair(self, idx: int) -> ProcessedPreferencePair:
+    def _get_processed_pair(self, idx: int) -> ProcessedPreferencePair | None:
         if self.tokenizer is None:
             raise RuntimeError("PreferenceStreamingDataset requires a tokenizer for processing")
         pair = self.get_canonical_pair(idx)
@@ -394,8 +387,11 @@ class PreferenceStreamingDataset:
             pair_id=pair.pair_id,
             max_length=self.max_length,
             max_completion_length=self.max_completion_length,
-            pair_capacity=self.pair_capacity,
         )
+        processed = self._apply_oversize_strategy(prompt, chosen_completion, rejected_completion, pair.pair_id, idx)
+        if processed is None:
+            return None
+        prompt, chosen_completion, rejected_completion = processed
         chosen_tokens = torch.cat((prompt, chosen_completion))
         rejected_tokens = torch.cat((prompt, rejected_completion))
         if torch.equal(chosen_tokens, rejected_tokens) or torch.equal(chosen_completion, rejected_completion):
@@ -418,6 +414,65 @@ class PreferenceStreamingDataset:
             rejected_completion_length=rejected_completion.numel(),
             source_idx=idx,
         )
+
+    def _apply_oversize_strategy(
+        self,
+        prompt: torch.Tensor,
+        chosen: torch.Tensor,
+        rejected: torch.Tensor,
+        pair_id: str,
+        idx: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+        lengths = [prompt.numel() + chosen.numel(), prompt.numel() + rejected.numel()]
+        if sum(lengths) <= self.pair_capacity:
+            return prompt, chosen, rejected
+        logger.warning(
+            "PreferenceStreamingDataset[oversize=%s]: pair %r length %s exceeds capacity %s",
+            self.oversize_strategy,
+            pair_id,
+            sum(lengths),
+            self.pair_capacity,
+        )
+        if self.oversize_strategy == "keep":
+            return prompt, chosen, rejected
+        if self.oversize_strategy == "skip":
+            return None
+
+        # Split the pair budget evenly, giving a shorter branch's unused
+        # capacity to the other branch.
+        short = 0 if lengths[0] <= lengths[1] else 1
+        capacities = [0, 0]
+        capacities[short] = min(lengths[short], self.pair_capacity // 2)
+        capacities[1 - short] = self.pair_capacity - capacities[short]
+        if min(capacities) == 0 and self.oversize_strategy in {"truncate_left", "truncate_right"}:
+            raise _PreferenceRowError("oversize", f"preference pair {pair_id!r} capacity must retain both branches")
+        branches = []
+        for name, completion, capacity in zip(("chosen", "rejected"), (chosen, rejected), capacities, strict=True):
+            processed = apply_oversize_strategy(
+                tokens=torch.cat((prompt, completion)),
+                loss_mask=torch.cat((torch.zeros_like(prompt), torch.ones_like(completion))),
+                capacity=capacity,
+                strategy=self.oversize_strategy,
+                custom_fn=self.oversize_custom_fn,
+                idx=idx,
+            )
+            if processed is None:
+                return None
+            branches.append(_split_branch(*processed, pair_id=pair_id, branch=name))
+        chosen_prompt, chosen = branches[0]
+        rejected_prompt, rejected = branches[1]
+        if self.oversize_strategy == "truncate_left":
+            # Different response lengths can leave different prompt suffixes.
+            # Retain only the suffix present in both branches.
+            prompt_length = min(chosen_prompt.numel(), rejected_prompt.numel())
+            prompt = prompt[-prompt_length:] if prompt_length else prompt[:0]
+        else:
+            if not torch.equal(chosen_prompt, rejected_prompt):
+                raise _PreferenceRowError(
+                    "prompt_mismatch", f"preference pair {pair_id!r} chosen/rejected prompt tokens differ"
+                )
+            prompt = chosen_prompt
+        return prompt, chosen, rejected
 
     def _process_one_safe(self, idx: int) -> ProcessedPreferencePair | None:
         try:
@@ -461,7 +516,7 @@ class PreferenceStreamingDataset:
         return self.get_batch(n)
 
     def get_batch_in_order(self, start: int, n: int) -> list[ProcessedPreferencePair]:
-        return [self.get_processed_pair(index) for index in range(start, min(start + n, len(self.reader)))]
+        return self.get_batch_by_indices(range(start, min(start + n, len(self.reader))))
 
 
 def pack_preference_pairs_for_tq(

@@ -424,7 +424,7 @@ PPO 当前支持同步 colocate 模式，并要求在 `--resource` 中包含 `cr
 | `--dpo-beta` | float | 0.1 | 仅用于 DPO。缩放策略与参考模型的对数概率差值，必须为有限正数。 |
 | `--dpo-reference-free` | flag | False | 仅用于 DPO。显式启用 reference-free logistic DPO；参考模型配置缺失或无效时会报错，不会自动切换到此模式。 |
 
-`--global-batch-size` 按样本对计数。`--max-tokens-per-gpu` 计算两条完整分支的 token 数，因此共享 prompt 会计入两次；预处理时可能为满足这项总预算再次截断。偏好训练不支持 `--sft-predict-interval`、`--sft-chunked-logits` 或 `--sft-async-prepack`。
+`--global-batch-size` 按样本对计数。`--max-tokens-per-gpu` 计算两条完整分支的 token 数，因此共享 prompt 会计入两次。应用上述显式长度限制后，默认的 `--sft-oversize-strategy keep` 会保留仍超出预算的样本对，并将其单独放入一个微批次。其他策略见[超长样本处理](#超长样本处理)。偏好训练不支持 `--sft-predict-interval`、`--sft-chunked-logits` 或 `--sft-async-prepack`。
 
 ### 流式数据集预取
 
@@ -477,6 +477,10 @@ SFT producer 如何处理 tokenize + 多模态展开后长度超过单卡容量�
 |------|------|--------|--------|------|
 | `--sft-oversize-strategy` | str | keep | `skip`, `keep`, `truncate_left`, `truncate_right`, `custom` | `skip` 丢弃样本；`keep` 原样返回（可能下游 OOM）；`truncate_left` 保留末尾 `capacity` 个 token；`truncate_right` 保留开头 `capacity` 个 token；`custom` 委托给 `--sft-oversize-custom-function-path`。⚠ 直接截多模态样本可能导致 `multimodal_train_inputs` 错位——需要同时裁剪媒体输入时请用 `custom`。 |
 | `--sft-oversize-custom-function-path` | str | None | - | 在 `--sft-oversize-strategy custom` 时必填。指向一个 Python 可导入函数，签名为 `def truncate(tokens, loss_mask, capacity, idx) -> (tokens, loss_mask) \| None`。返回 `None` 等同于 `skip`。 |
+
+偏好训练先应用 `--preference-max-length` 和 `--preference-max-completion-length`，再使用上述选项处理超长样本对。容量按两条分支的总长度计算：`keep` 保留整对样本并单独组成一个微批次，`skip` 丢弃整对样本。
+
+使用 `truncate_left`、`truncate_right` 或 `custom` 时，Relax 会在两条分支之间分配整对样本的预算。左截断保留相同的 prompt 后缀，右截断保留每条分支的开头。自定义函数接收超出所分配容量的分支及其容量；任一分支返回 `None` 都会丢弃整对样本。处理后，若任一分支没有参与训练的回答 token、两条回答相同，或两条分支的 prompt 不同，则会报错。
 
 ::: tip 相关数据集参数
 SFT 还会用到通用的[数据配置](#数据配置)参数，特别是 `--input-key`、`--label-key`、`--conversation-key-map`（sharegpt 风格数据集）、`--multimodal-keys`、`--system-prompt`、`--tool-key`。

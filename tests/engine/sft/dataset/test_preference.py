@@ -214,7 +214,7 @@ def test_shared_prompt_and_completion_truncation_preserves_pair_difference(tmp_p
         ],
     )
 
-    pair = _dataset(path, max_length=8, max_completion_length=3, pair_capacity=16).get_processed_pair(0)
+    pair = _dataset(path, max_length=8, max_completion_length=3, pair_capacity=8).get_processed_pair(0)
 
     assert pair.chosen_prompt_length == pair.rejected_prompt_length == 5
     assert pair.chosen_completion_length == pair.rejected_completion_length == 3
@@ -222,6 +222,119 @@ def test_shared_prompt_and_completion_truncation_preserves_pair_difference(tmp_p
     assert not torch.equal(
         pair.chosen_tokens[pair.chosen_prompt_length :], pair.rejected_tokens[pair.rejected_prompt_length :]
     )
+
+
+@pytest.fixture
+def oversize_pair_path(tmp_path: Path) -> Path:
+    path = tmp_path / "oversize.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {
+                "prompt_id": "oversize",
+                "prompt": [{"role": "user", "content": "abcd"}],
+                "chosen": {"role": "assistant", "content": "chosen"},
+                "rejected": {"role": "assistant", "content": "badly"},
+            }
+        ],
+    )
+    return path
+
+
+@pytest.mark.parametrize("capacity", [1, 12, 64])
+def test_preference_keep_does_not_change_tokens_with_batch_budget(oversize_pair_path: Path, capacity: int):
+    expected = _dataset(oversize_pair_path).get_processed_pair(0)
+    actual = _dataset(oversize_pair_path, pair_capacity=capacity).get_processed_pair(0)
+    assert pack_preference_pairs_for_tq([actual]) == pack_preference_pairs_for_tq([expected])
+
+
+@pytest.mark.parametrize(
+    ("strategy", "chosen_slice", "rejected_slice", "prompt_length"),
+    [("truncate_left", slice(-6, None), slice(4, None), 0), ("truncate_right", slice(None, 6), slice(None, 6), 4)],
+)
+def test_preference_explicit_truncation_preserves_shared_prompt_and_masks(
+    oversize_pair_path: Path, strategy: str, chosen_slice: slice, rejected_slice: slice, prompt_length: int
+):
+    original = _dataset(oversize_pair_path).get_processed_pair(0)
+    pair = _dataset(oversize_pair_path, pair_capacity=12, oversize_strategy=strategy).get_processed_pair(0)
+    torch.testing.assert_close(pair.chosen_tokens, original.chosen_tokens[chosen_slice])
+    torch.testing.assert_close(pair.rejected_tokens, original.rejected_tokens[rejected_slice])
+    assert pair.chosen_prompt_length == pair.rejected_prompt_length == prompt_length
+    torch.testing.assert_close(pair.chosen_tokens[:prompt_length], pair.rejected_tokens[:prompt_length])
+    for mask in (pair.chosen_loss_mask, pair.rejected_loss_mask):
+        assert not mask[:prompt_length].any()
+        assert mask[prompt_length:].all()
+    assert pair.chosen_total_length + pair.rejected_total_length <= 12
+
+
+@pytest.mark.parametrize("prefetch_max_cached", [0, 2])
+def test_preference_skip_refills_training_but_does_not_repeat_eval(oversize_pair_path: Path, prefetch_max_cached: int):
+    rows = [json.loads(oversize_pair_path.read_text())]
+    rows.append({**rows[0], "prompt_id": "short", "prompt": [{"role": "user", "content": ""}]})
+    _write_jsonl(oversize_pair_path, rows)
+    dataset = PreferenceStreamingDataset(
+        path=str(oversize_pair_path),
+        tokenizer=_FakeTokenizer(),
+        pair_capacity=12,
+        oversize_strategy="skip",
+        prefetch_max_cached=prefetch_max_cached,
+        prefetch_chunk_size=1,
+        prefetch_num_workers=1,
+    )
+    try:
+        dataset.shuffle(0)
+        if prefetch_max_cached:
+            assert dataset._prefetch.wait_for(0, timeout=5)
+        pairs, crossed = dataset.get_batch(3)
+        assert crossed
+        assert [pair.source_idx for pair in pairs] == [1, 1, 1]
+        cursor = dataset.index_manager.position
+        assert [pair.source_idx for pair in dataset.get_batch_in_order(0, 2)] == [1]
+        assert [pair.source_idx for pair in dataset.get_batch_by_indices([1, 0])] == [1]
+        assert dataset.index_manager.position == cursor
+    finally:
+        dataset.stop()
+
+
+def test_preference_skip_fails_when_no_pair_fits(oversize_pair_path: Path):
+    dataset = _dataset(oversize_pair_path, pair_capacity=1, oversize_strategy="skip")
+    dataset.shuffle(0)
+    with pytest.raises(RuntimeError, match="partial batch: expected 1, got 0"):
+        dataset.get_batch(1)
+    assert dataset.get_batch_in_order(0, 1) == []
+
+
+@pytest.mark.parametrize(("rejected", "capacities"), [("badly", [6, 6]), ("n", [7])])
+@pytest.mark.parametrize("skip", [False, True])
+def test_preference_custom_uses_branch_budget_and_skips_whole_pair(
+    oversize_pair_path: Path, rejected: str, capacities: list[int], skip: bool
+):
+    row = json.loads(oversize_pair_path.read_text())
+    row["rejected"]["content"] = rejected
+    _write_jsonl(oversize_pair_path, [row])
+    calls = []
+
+    def truncate(*, tokens, loss_mask, capacity, idx):
+        calls.append((capacity, idx))
+        return None if skip else (tokens[:capacity], loss_mask[:capacity])
+
+    pair = _dataset(
+        oversize_pair_path, pair_capacity=12, oversize_strategy="custom", oversize_custom_fn=truncate
+    ).get_processed_pair(0)
+    assert calls == [(capacity, 0) for capacity in (capacities[:1] if skip else capacities)]
+    if skip:
+        assert pair is None
+    else:
+        assert pair.chosen_prompt_length == pair.rejected_prompt_length == 4
+        assert pair.chosen_total_length + pair.rejected_total_length == 12
+        assert pair.chosen_completion_length == capacities[0] - 4
+
+
+def test_preference_truncation_reports_when_budget_removes_completion(oversize_pair_path: Path):
+    with pytest.raises(PreferenceDataError, match="completion has no supervised tokens") as error:
+        _dataset(oversize_pair_path, pair_capacity=8, oversize_strategy="truncate_right").get_processed_pair(0)
+    assert error.value.pair_id == "oversize"
+    assert error.value.source_idx == 0
 
 
 def test_pack_pair_rows_and_custom_meta_are_aligned(tmp_path: Path):

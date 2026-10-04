@@ -146,6 +146,8 @@ def _create_sft_train_dataset(
             max_length=config.preference_max_length,
             max_completion_length=config.preference_max_completion_length,
             pair_capacity=capacity,
+            oversize_strategy=oversize_strategy,
+            oversize_custom_fn=oversize_custom_fn,
             seed=getattr(config, "seed", 42),
             prefetch_max_cached=prefetch_buffer_size,
             prefetch_chunk_size=prefetch_chunk_size,

@@ -132,6 +132,7 @@ def test_pair_packer_is_deterministic_complete_and_capacity_safe():
     assert bins == pack_preference_pair_indices(costs, pair_ids, capacity=10)
 
 
-def test_pair_packer_reports_oversize_pair():
-    with pytest.raises(ValueError, match=r"oversize preference pair 'pair-a'.*cost 11, capacity=10"):
-        pack_preference_pair_indices([11], ["pair-a"], capacity=10)
+def test_pair_packer_keeps_oversize_pairs_in_separate_bins():
+    bins = pack_preference_pair_indices([11, 2, 4, 4, 12], ["a", "b", "c", "d", "e"], capacity=10)
+
+    assert bins == [[4], [0], [2, 3, 1]]

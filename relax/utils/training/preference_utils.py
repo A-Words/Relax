@@ -128,7 +128,8 @@ def pack_preference_pair_indices(
     *,
     capacity: int,
 ) -> list[list[int]]:
-    """Deterministic capacity-aware first-fit-decreasing pair packing."""
+    """Pack pairs by decreasing cost, keeping oversize pairs in separate
+    bins."""
     if capacity <= 0:
         raise ValueError(f"capacity must be positive, got {capacity}")
     if len(costs) != len(pair_ids):
@@ -137,8 +138,6 @@ def pack_preference_pair_indices(
     for pair_id, cost in zip(pair_ids, normalized_costs, strict=True):
         if cost <= 0:
             raise ValueError(f"pair {pair_id!r} has non-positive cost {cost}")
-        if cost > capacity:
-            raise ValueError(f"oversize preference pair {pair_id!r} has cost {cost}, capacity={capacity}")
 
     order = sorted(range(len(normalized_costs)), key=lambda index: (-normalized_costs[index], str(pair_ids[index])))
     bins: list[list[int]] = []
