@@ -434,22 +434,31 @@ def _validate_lora_model_state_load(model):
             chunk.load_state_dict = original
 
 
-def _resolve_checkpoint_iteration_dir(load_path: str | Path) -> Path | None:
+def _checkpoint_iteration_dir(load_path: str | Path, ckpt_step: int | None = None) -> Path:
     path = Path(load_path)
     if re.fullmatch(r"iter_\d{7}", path.name):
         return path
     tracker = path / "latest_checkpointed_iteration.txt"
-    if not tracker.is_file():
-        return None
-    value = tracker.read_text().strip()
-    if not value.isdigit():
-        return None
-    return path / f"iter_{int(value):07d}"
+    try:
+        metadata = tracker.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError(f"cannot resolve Megatron checkpoint iteration from {tracker}") from exc
+    if metadata == "release":
+        return path / "release"
+    try:
+        iteration = int(metadata)
+    except ValueError as exc:
+        raise RuntimeError(f"cannot resolve Megatron checkpoint iteration from {tracker}") from exc
+    if ckpt_step is not None:
+        iteration = int(ckpt_step)
+    if iteration < 0:
+        raise RuntimeError(f"Megatron checkpoint iteration must be non-negative, got {iteration}")
+    return path / f"iter_{iteration:07d}"
 
 
 def _read_lora_checkpoint_metadata(load_path: str | Path) -> dict | None:
-    checkpoint_dir = _resolve_checkpoint_iteration_dir(load_path)
-    if checkpoint_dir is None or not checkpoint_dir.is_dir():
+    checkpoint_dir = _checkpoint_iteration_dir(load_path, getattr(get_args(), "ckpt_step", None))
+    if not checkpoint_dir.is_dir():
         return None
     from megatron.core import dist_checkpointing
 
@@ -515,7 +524,7 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
 
     exist = Path(load_path).exists() and _is_dir_nonempty(load_path)
 
-    if exist and _is_megatron_checkpoint(load_path):
+    if exist and is_megatron_checkpoint(load_path):
         _alias_renamed_transfer_queue_enum()
         lora_metadata = _read_lora_checkpoint_metadata(load_path)
         try:
@@ -600,7 +609,7 @@ def _format_opt_param_scheduler_error(args, original: AssertionError) -> str:
     )
 
 
-def _is_megatron_checkpoint(path: str | Path) -> bool:
+def is_megatron_checkpoint(path: str | Path) -> bool:
     return (Path(path) / "latest_checkpointed_iteration.txt").is_file() or bool(
         re.fullmatch(r"iter_\d{7}", Path(path).name)
     )
