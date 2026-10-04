@@ -9,7 +9,6 @@ from scripts.data.prepare_ultrafeedback_preferences import _select, _validate_ro
 
 def _row() -> dict:
     return {
-        "prompt_id": "pair-1",
         "chosen": [
             {"role": "user", "content": "question"},
             {"role": "assistant", "content": "good"},
@@ -42,12 +41,22 @@ def test_validate_row_rejects_invalid_message_schema(replacement, match: str, br
 def test_select_classifies_non_object_rows_as_schema_rejections():
     selected, rejected = _select(["not-an-object", _row()], split="train_prefs", count=1)
 
-    assert selected[0]["prompt_id"] == "pair-1"
+    assert selected[0]["metadata"]["source_index"] == 1
     assert rejected == [
         {
-            "prompt_id": None,
             "source_index": 0,
             "reason_code": "schema",
             "reason": "train_prefs[0] must be an object",
         }
     ]
+
+
+@pytest.mark.parametrize("extra", [{}, {"prompt_id": "reused"}, {"prompt_id": 7}, {"prompt_id": None}])
+def test_select_is_deterministic_without_external_pair_ids(extra: dict):
+    rows = [{**_row(), **extra} for _ in range(4)]
+    selected, rejected = _select(rows, split="train_prefs", count=4)
+
+    assert rejected == []
+    assert sorted(row["metadata"]["source_index"] for row in selected) == [0, 1, 2, 3]
+    assert all("prompt_id" not in row for row in selected)
+    assert _select(rows, split="train_prefs", count=4) == (selected, rejected)

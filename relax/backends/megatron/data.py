@@ -874,7 +874,7 @@ def _get_preference_data_iterator(
     max_tokens_per_gpu: int | None,
 ) -> tuple[list[DataIterator], list[int]]:
     pair_costs = [int(cost) for cost in rollout_data["preference_pair_costs"]]
-    pair_ids = [str(pair_id) for pair_id in rollout_data["preference_pair_ids"]]
+    pair_ids = rollout_data["preference_pair_ids"]
     dp_size = mpu.get_data_parallel_world_size(with_context_parallel=False)
     dynamic_count = rollout_data.get("dynamic_global_batch_size")
     if isinstance(dynamic_count, (list, tuple)):

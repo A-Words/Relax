@@ -418,7 +418,6 @@ Use `--loss-type dpo` for DPO. Keep `--task-type causal_lm`; the loss type selec
 |-----------|------|---------|-------------|
 | `--preference-chosen-key` | str | chosen | Dataset field containing the preferred response or conversation. |
 | `--preference-rejected-key` | str | rejected | Dataset field containing the rejected response or conversation. |
-| `--preference-pair-id-key` | str | prompt_id | Dataset field containing a unique, non-empty string ID for each pair. |
 | `--preference-max-length` | int | 1024 | Maximum prompt + completion tokens in each branch. Both branches retain the same prompt suffix. Must not exceed `--seq-length`. |
 | `--preference-max-completion-length` | int | 512 | Maximum completion tokens per branch. Keeps the first tokens of longer completions, then trims the shared prompt to fit `--preference-max-length`. Must not exceed that limit. |
 | `--dpo-beta` | float | 0.1 | DPO only. Finite, positive scale for the policy/reference log-probability margin. |

@@ -88,17 +88,15 @@ def test_preference_bootstrap_resolves_pair_steps_and_roles(tmp_path):
     path = tmp_path / "pairs.jsonl"
     rows = [
         {
-            "pair_id": f"pair-{index}",
             "prompt": [{"role": "user", "content": "Question"}],
             "chosen": {"role": "assistant", "content": "Chosen"},
             "rejected": {"role": "assistant", "content": "Rejected"},
         }
-        for index in range(4)
+        for _ in range(4)
     ]
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
     config = _args(
         prompt_data=str(path),
-        preference_pair_id_key="pair_id",
         resource={"sft": [1, 0], "actor": [1, 1]},
         rollout_batch_size=2,
         num_epoch=3,

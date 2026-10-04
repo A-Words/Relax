@@ -589,12 +589,6 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 help="Dataset column for the rejected response in each preference pair.",
             )
             parser.add_argument(
-                "--preference-pair-id-key",
-                type=str,
-                default="prompt_id",
-                help="Dataset column containing a unique string ID for each preference pair.",
-            )
-            parser.add_argument(
                 "--preference-max-length",
                 type=int,
                 default=1024,

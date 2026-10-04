@@ -15,11 +15,10 @@ python scripts/data/prepare_ultrafeedback_preferences.py \
 
 脚本从固定版本的 UltraFeedback 中选取 4,096 对训练样本和 512 对评测样本，分别生成 JSONL 和 Parquet 文件。
 
-使用自己的数据时，每行放一对回答。`chosen` 是更好的回答，`rejected` 是另一条回答。两个消息列表的对话历史必须相同，最后一条助手回答不同。每行的 `prompt_id` 必须唯一。
+使用自己的数据时，每行放一对回答。`chosen` 是更好的回答，`rejected` 是另一条回答。两个消息列表的对话历史必须相同，最后一条助手回答不同。
 
 ```json
 {
-  "prompt_id": "capital-1",
   "chosen": [{"role": "user", "content": "What is the capital of France?"}, {"role": "assistant", "content": "Paris."}],
   "rejected": [{"role": "user", "content": "What is the capital of France?"}, {"role": "assistant", "content": "London."}]
 }

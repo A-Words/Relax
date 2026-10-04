@@ -28,7 +28,6 @@ ray job submit ${RAY_NO_WAIT:+--no-wait} --address="http://127.0.0.1:8265" \
     --dpo-beta 0.1 \
     --prompt-data "${PROMPT_DATA}" \
     --input-key prompt \
-    --preference-pair-id-key prompt_id \
     --preference-max-length 1024 \
     --preference-max-completion-length 512 \
     --hf-checkpoint "${HF_CHECKPOINT}" \

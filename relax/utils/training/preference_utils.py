@@ -124,7 +124,7 @@ def build_preference_pair_indices(
 
 def pack_preference_pair_indices(
     costs: Sequence[int],
-    pair_ids: Sequence[str],
+    pair_ids: Sequence[int],
     *,
     capacity: int,
 ) -> list[list[int]]:
@@ -139,7 +139,7 @@ def pack_preference_pair_indices(
         if cost <= 0:
             raise ValueError(f"pair {pair_id!r} has non-positive cost {cost}")
 
-    order = sorted(range(len(normalized_costs)), key=lambda index: (-normalized_costs[index], str(pair_ids[index])))
+    order = sorted(range(len(normalized_costs)), key=lambda index: (-normalized_costs[index], pair_ids[index]))
     bins: list[list[int]] = []
     bin_costs: list[int] = []
     for index in order:

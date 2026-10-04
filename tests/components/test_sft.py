@@ -138,7 +138,6 @@ def test_preference_datasets_receive_oversize_policy(monkeypatch, loss_type, ove
     args.loss_type = loss_type
     args.preference_chosen_key = "chosen"
     args.preference_rejected_key = "rejected"
-    args.preference_pair_id_key = "pair_id"
     args.preference_max_length = 1024
     args.preference_max_completion_length = 512
     if oversize_strategy is not None:

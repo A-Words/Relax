@@ -2,7 +2,6 @@
 
 """Preference-pair schema, rendering, truncation, and queue tests."""
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -50,14 +49,13 @@ class _FakeTokenizer:
         return input_ids
 
 
-def _dataset(path: Path, **kwargs) -> PreferenceStreamingDataset:
+def _dataset(path: Path | list[Path], **kwargs) -> PreferenceStreamingDataset:
     return PreferenceStreamingDataset(
-        path=str(path),
+        path=[str(item) for item in path] if isinstance(path, list) else str(path),
         tokenizer=_FakeTokenizer(),
         prompt_key="prompt",
         chosen_key="chosen",
         rejected_key="rejected",
-        pair_id_key="prompt_id",
         prefetch_max_cached=0,
         **kwargs,
     )
@@ -69,7 +67,6 @@ def test_explicit_pair_builds_identical_prompt_and_completion_only_masks(tmp_pat
         path,
         [
             {
-                "prompt_id": "pair-1",
                 "prompt": [{"role": "user", "content": "question"}],
                 "chosen": {"role": "assistant", "content": "good"},
                 "rejected": {"role": "assistant", "content": "bad"},
@@ -107,15 +104,15 @@ def test_preference_pair_masks_historical_assistant_turns(tmp_path: Path, implic
     prompt.append({"role": "user", "content": "question"})
     chosen = {"role": "assistant", "content": "good"}
     rejected = {"role": "assistant", "content": "bad"}
-    row = {"prompt_id": "history", "prompt": prompt, "chosen": chosen, "rejected": rejected}
+    row = {"prompt": prompt, "chosen": chosen, "rejected": rejected}
     if implicit_prompt:
-        row = {"prompt_id": "history", "chosen": [*prompt, chosen], "rejected": [*prompt, rejected]}
+        row = {"chosen": [*prompt, chosen], "rejected": [*prompt, rejected]}
     path = tmp_path / "history.jsonl"
     _write_jsonl(path, [row])
 
     pair = _dataset(path).get_processed_pair(0)
 
-    assert pair.pair_id == "history"
+    assert pair.pair_id == 0
     expected_prompt = _FakeTokenizer().apply_chat_template(prompt).squeeze(0)
     for branch, expected_completion in (("chosen", [33, 31, 31, 30]), ("rejected", [38, 37, 30])):
         tokens = getattr(pair, f"{branch}_tokens")
@@ -135,7 +132,6 @@ def test_preference_dataset_preserves_error_context(tmp_path: Path, prefetch_max
         path,
         [
             {
-                "prompt_id": "pair-identical",
                 "prompt": [{"role": "user", "content": "question"}],
                 "chosen": {"role": "assistant", "content": "same"},
                 "rejected": {"role": "assistant", "content": "same"},
@@ -157,7 +153,7 @@ def test_preference_dataset_preserves_error_context(tmp_path: Path, prefetch_max
             dataset.get_batch(1)
         assert exc_info.value.reason_code == "identical"
         assert exc_info.value.source_idx == 0
-        assert exc_info.value.pair_id == "pair-identical"
+        assert exc_info.value.pair_id == 0
         assert exc_info.value.__cause__ is not None
         assert "identical" in str(exc_info.value.__cause__)
     finally:
@@ -167,13 +163,12 @@ def test_preference_dataset_preserves_error_context(tmp_path: Path, prefetch_max
 @pytest.mark.parametrize(
     ("update", "match"),
     [
-        ({"prompt_id": None}, "prompt_id"),
+        ({"chosen": None}, "message object"),
         ({"rejected": {"role": "user", "content": "bad"}}, "assistant"),
     ],
 )
 def test_pair_schema_rejects_invalid_rows(tmp_path: Path, update: dict, match: str):
     row = {
-        "prompt_id": "pair-1",
         "prompt": [{"role": "user", "content": "question"}],
         "chosen": {"role": "assistant", "content": "good"},
         "rejected": {"role": "assistant", "content": "bad"},
@@ -186,18 +181,43 @@ def test_pair_schema_rejects_invalid_rows(tmp_path: Path, update: dict, match: s
         _dataset(path, max_length=32, max_completion_length=8, pair_capacity=64).get_processed_pair(0)
 
 
-def test_preference_dataset_rejects_duplicate_pair_ids(tmp_path: Path):
+@pytest.mark.parametrize("extra", [{}, {"prompt_id": "reused"}, {"prompt_id": 7}, {"prompt_id": None}])
+def test_preference_rows_do_not_require_external_pair_ids(tmp_path: Path, extra: dict):
     row = {
-        "prompt_id": "duplicate",
+        **extra,
         "prompt": [{"role": "user", "content": "question"}],
         "chosen": {"role": "assistant", "content": "good"},
         "rejected": {"role": "assistant", "content": "bad"},
     }
     path = tmp_path / "pairs.jsonl"
     _write_jsonl(path, [row, row])
+    pairs = _dataset(path).get_batch_by_indices([1, 0])
+    batch, _ = pack_preference_pairs_for_tq(pairs)
 
-    with pytest.raises(ValueError, match="duplicate preference pair ID"):
-        _dataset(path, max_length=32, max_completion_length=8, pair_capacity=64)
+    assert batch["pair_ids"] == [1, 0]
+    assert all(pair.chosen_tokens[-4:].tolist() == [33, 31, 31, 30] for pair in pairs)
+    assert all(pair.rejected_tokens[-3:].tolist() == [38, 37, 30] for pair in pairs)
+
+
+def test_preference_initialization_does_not_read_rows_and_errors_do_not_reread(tmp_path: Path, monkeypatch):
+    from relax.utils.data.streaming_dataset import StreamingReader
+
+    path = tmp_path / "pairs.jsonl"
+    _write_jsonl(path, [{}, {}, {}])
+    reads = []
+    original_getitem = StreamingReader.__getitem__
+
+    def getitem(reader, index):
+        reads.append(index)
+        return original_getitem(reader, index)
+
+    monkeypatch.setattr(StreamingReader, "__getitem__", getitem)
+    dataset = _dataset(path)
+    assert reads == []
+    with pytest.raises(PreferenceDataError) as error:
+        dataset.get_processed_pair(2)
+    assert reads == [2]
+    assert error.value.source_idx == error.value.pair_id == 2
 
 
 def test_shared_prompt_and_completion_truncation_preserves_pair_difference(tmp_path: Path):
@@ -206,7 +226,6 @@ def test_shared_prompt_and_completion_truncation_preserves_pair_difference(tmp_p
         path,
         [
             {
-                "prompt_id": "pair-1",
                 "prompt": [{"role": "user", "content": "0123456789"}],
                 "chosen": {"role": "assistant", "content": "chosen"},
                 "rejected": {"role": "assistant", "content": "reject"},
@@ -231,7 +250,6 @@ def oversize_pair_path(tmp_path: Path) -> Path:
         path,
         [
             {
-                "prompt_id": "oversize",
                 "prompt": [{"role": "user", "content": "abcd"}],
                 "chosen": {"role": "assistant", "content": "chosen"},
                 "rejected": {"role": "assistant", "content": "badly"},
@@ -270,7 +288,7 @@ def test_preference_explicit_truncation_preserves_shared_prompt_and_masks(
 @pytest.mark.parametrize("prefetch_max_cached", [0, 2])
 def test_preference_skip_refills_training_but_does_not_repeat_eval(oversize_pair_path: Path, prefetch_max_cached: int):
     rows = [json.loads(oversize_pair_path.read_text())]
-    rows.append({**rows[0], "prompt_id": "short", "prompt": [{"role": "user", "content": ""}]})
+    rows.append({**rows[0], "prompt": [{"role": "user", "content": ""}]})
     _write_jsonl(oversize_pair_path, rows)
     dataset = PreferenceStreamingDataset(
         path=str(oversize_pair_path),
@@ -333,7 +351,7 @@ def test_preference_custom_uses_branch_budget_and_skips_whole_pair(
 def test_preference_truncation_reports_when_budget_removes_completion(oversize_pair_path: Path):
     with pytest.raises(PreferenceDataError, match="completion has no supervised tokens") as error:
         _dataset(oversize_pair_path, pair_capacity=8, oversize_strategy="truncate_right").get_processed_pair(0)
-    assert error.value.pair_id == "oversize"
+    assert error.value.pair_id == 0
     assert error.value.source_idx == 0
 
 
@@ -343,7 +361,6 @@ def test_pack_pair_rows_and_custom_meta_are_aligned(tmp_path: Path):
     for idx in range(2):
         rows.append(
             {
-                "prompt_id": f"pair-{idx}",
                 "prompt": [{"role": "user", "content": f"q{idx}"}],
                 "chosen": {"role": "assistant", "content": f"yes{idx}"},
                 "rejected": {"role": "assistant", "content": f"no{idx}"},
@@ -354,18 +371,19 @@ def test_pack_pair_rows_and_custom_meta_are_aligned(tmp_path: Path):
 
     batch, custom_meta = pack_preference_pairs_for_tq([dataset.get_processed_pair(0), dataset.get_processed_pair(1)])
 
-    assert len(batch["pair_ids"]) == len(custom_meta) == 2
+    assert batch["pair_ids"] == [0, 1]
+    assert len(custom_meta) == 2
     for idx, metadata in enumerate(custom_meta):
         assert metadata["total_lengths"] == (batch["chosen_total_lengths"][idx] + batch["rejected_total_lengths"][idx])
 
 
-def test_cross_epoch_batch_preserves_repeated_pairs_and_resume_order(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("multiple_files", [False, True])
+def test_cross_epoch_batch_preserves_repeated_pairs_and_resume_order(tmp_path: Path, multiple_files: bool):
     path = tmp_path / "pairs.jsonl"
     _write_jsonl(
         path,
         [
             {
-                "prompt_id": f"pair-{index}",
                 "prompt": [{"role": "user", "content": f"q{index}"}],
                 "chosen": {"role": "assistant", "content": f"yes{index}"},
                 "rejected": {"role": "assistant", "content": f"no{index}"},
@@ -373,30 +391,31 @@ def test_cross_epoch_batch_preserves_repeated_pairs_and_resume_order(tmp_path: P
             for index in range(10)
         ],
     )
-    dataset = _dataset(path, seed=42)
+    paths = path
+    if multiple_files:
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        second_path = tmp_path / "more-pairs.jsonl"
+        _write_jsonl(path, rows[:5])
+        _write_jsonl(second_path, rows[5:])
+        paths = [path, second_path]
+    dataset = _dataset(paths, seed=42)
     dataset.shuffle(0)
     dataset.get_batch(8)
     pairs, crossed = dataset.get_batch(4)
     assert crossed
     assert [pair.source_idx for pair in pairs] == [2, 3, 7, 2]
     batch, metadata = pack_preference_pairs_for_tq(pairs)
-    assert len(batch["pair_ids"]) == len(metadata) == 4
-    assert batch["pair_ids"][0] == batch["pair_ids"][3]
+    assert batch["pair_ids"] == [2, 3, 7, 2]
+    assert len(metadata) == 4
     for index, pair in enumerate(pairs):
         assert batch["chosen_tokens"][index] == pair.chosen_tokens.tolist()
         assert batch["rejected_tokens"][index] == pair.rejected_tokens.tolist()
 
-    restored = _dataset(path, seed=42)
+    restored = _dataset(paths, seed=42)
     restored.shuffle(0, position=8)
     resumed, _ = restored.get_batch(4)
     assert [pair.source_idx for pair in resumed] == [pair.source_idx for pair in pairs]
     assert pack_preference_pairs_for_tq(resumed) == (batch, metadata)
-
-    # Distinct source IDs hashing to the same value must still fail.
-    constant_digest = hashlib.sha256(b"collision")
-    monkeypatch.setattr(hashlib, "sha256", lambda _value: constant_digest)
-    with pytest.raises(ValueError, match="hash collision"):
-        pack_preference_pairs_for_tq(pairs)
 
 
 def test_preference_split_eval_and_resume_preserve_pair_order(tmp_path: Path):
@@ -407,12 +426,11 @@ def test_preference_split_eval_and_resume_preserve_pair_order(tmp_path: Path):
         path,
         [
             {
-                "prompt_id": f"pair-{i}",
                 "prompt": [{"role": "user", "content": "question"}],
                 "chosen": {"role": "assistant", "content": "good"},
                 "rejected": {"role": "assistant", "content": "bad"},
             }
-            for i in range(10)
+            for _ in range(10)
         ],
     )
     train_indices, eval_indices = resolve_sft_split_indices(10, 0.3, seed=42)
@@ -437,6 +455,6 @@ def test_preference_split_eval_and_resume_preserve_pair_order(tmp_path: Path):
 @pytest.mark.parametrize("indices", [[], [0, 0], [-1], [2], [0.5]])
 def test_preference_split_rejects_invalid_training_indices(tmp_path: Path, indices):
     path = tmp_path / "split.jsonl"
-    _write_jsonl(path, [{"prompt_id": "pair-0"}, {"prompt_id": "pair-1"}])
+    _write_jsonl(path, [{}, {}])
     with pytest.raises(ValueError):
         _dataset(path).restrict_training_indices(indices)

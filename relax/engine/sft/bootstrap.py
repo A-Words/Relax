@@ -61,7 +61,6 @@ def resolve_sft_num_rollout(config: Namespace) -> None:
 
         sizing_dataset = PreferenceStreamingDataset(
             path=config.prompt_data,
-            pair_id_key=config.preference_pair_id_key,
             prefetch_max_cached=0,
         )
     else:

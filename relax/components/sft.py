@@ -141,7 +141,6 @@ def _create_sft_train_dataset(
             prompt_key=config.input_key,
             chosen_key=config.preference_chosen_key,
             rejected_key=config.preference_rejected_key,
-            pair_id_key=config.preference_pair_id_key,
             metadata_key=config.metadata_key,
             max_length=config.preference_max_length,
             max_completion_length=config.preference_max_completion_length,

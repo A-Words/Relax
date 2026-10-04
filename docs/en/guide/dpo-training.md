@@ -15,11 +15,10 @@ python scripts/data/prepare_ultrafeedback_preferences.py \
 
 The script selects 4,096 training pairs and 512 evaluation pairs from a fixed UltraFeedback version. It writes JSONL and Parquet files for each split.
 
-For your own data, put one pair on each row. `chosen` is the preferred answer. `rejected` is the other answer. Use the same conversation history in both message lists. End each list with a different assistant answer. Give each row a unique `prompt_id`.
+For your own data, put one pair on each row. `chosen` is the preferred answer. `rejected` is the other answer. Use the same conversation history in both message lists. End each list with a different assistant answer.
 
 ```json
 {
-  "prompt_id": "capital-1",
   "chosen": [{"role": "user", "content": "What is the capital of France?"}, {"role": "assistant", "content": "Paris."}],
   "rejected": [{"role": "user", "content": "What is the capital of France?"}, {"role": "assistant", "content": "London."}]
 }

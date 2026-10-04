@@ -123,7 +123,7 @@ def test_dpo_pair_loss_rejects_missing_reference_and_non_finite_values():
 
 def test_pair_packer_is_deterministic_complete_and_capacity_safe():
     costs = [2, 4, 4, 5, 5]
-    pair_ids = ["a", "b", "c", "d", "e"]
+    pair_ids = [0, 1, 2, 3, 4]
 
     bins = pack_preference_pair_indices(costs, pair_ids, capacity=10)
 
@@ -133,6 +133,6 @@ def test_pair_packer_is_deterministic_complete_and_capacity_safe():
 
 
 def test_pair_packer_keeps_oversize_pairs_in_separate_bins():
-    bins = pack_preference_pair_indices([11, 2, 4, 4, 12], ["a", "b", "c", "d", "e"], capacity=10)
+    bins = pack_preference_pair_indices([11, 2, 4, 4, 12], [0, 1, 2, 3, 4], capacity=10)
 
     assert bins == [[4], [0], [2, 3, 1]]

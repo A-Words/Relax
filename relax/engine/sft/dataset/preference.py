@@ -2,7 +2,6 @@
 
 """Streaming chosen/rejected dataset for offline preference objectives."""
 
-import hashlib
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -23,7 +22,7 @@ logger = get_logger(__name__)
 class PreferenceDataError(ValueError):
     """Stable, classified preference-row rejection."""
 
-    def __init__(self, reason_code: str, message: str, *, source_idx: int, pair_id: str | None = None) -> None:
+    def __init__(self, reason_code: str, message: str, *, source_idx: int, pair_id: int | None = None) -> None:
         super().__init__(message)
         self.reason_code = reason_code
         self.source_idx = source_idx
@@ -62,7 +61,7 @@ def _classify_preference_error(error: BaseException) -> str:
 class PreferencePair:
     """Canonical text-only preference pair before tokenization."""
 
-    pair_id: str
+    pair_id: int
     prompt: list[CanonicalMessage]
     chosen: CanonicalMessage
     rejected: CanonicalMessage
@@ -73,7 +72,7 @@ class PreferencePair:
 class ProcessedPreferencePair:
     """Tokenized pair kept atomic until after DP assignment."""
 
-    pair_id: str
+    pair_id: int
     chosen_tokens: torch.Tensor
     rejected_tokens: torch.Tensor
     chosen_loss_mask: torch.Tensor
@@ -110,13 +109,9 @@ def _normalize_pair_row(
     prompt_key: str,
     chosen_key: str,
     rejected_key: str,
-    pair_id_key: str,
     metadata_key: str,
     source_name: str,
 ) -> PreferencePair:
-    pair_id = row.get(pair_id_key)
-    if not isinstance(pair_id, str) or not pair_id:
-        raise _PreferenceRowError("schema", f"preference row requires a non-empty {pair_id_key}")
     chosen_raw = row.get(chosen_key)
     rejected_raw = row.get(rejected_key)
     prompt_raw = row.get(prompt_key)
@@ -154,12 +149,12 @@ def _normalize_pair_row(
     if not isinstance(metadata, dict):
         raise _PreferenceRowError("schema", f"preference {metadata_key} must be an object")
     metadata = dict(metadata)
-    metadata.update({"source_dataset": source_name, "row_index": row_index, "pair_id": pair_id})
-    return PreferencePair(pair_id=pair_id, prompt=prompt, chosen=chosen, rejected=rejected, metadata=metadata)
+    metadata.update({"source_dataset": source_name, "row_index": row_index, "pair_id": row_index})
+    return PreferencePair(pair_id=row_index, prompt=prompt, chosen=chosen, rejected=rejected, metadata=metadata)
 
 
 def _split_branch(
-    tokens: torch.Tensor, mask: torch.Tensor, *, pair_id: str, branch: str
+    tokens: torch.Tensor, mask: torch.Tensor, *, pair_id: int, branch: str
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if tokens.ndim != 1 or mask.ndim != 1 or tokens.shape != mask.shape:
         raise _PreferenceRowError(
@@ -183,7 +178,7 @@ def _truncate_pair(
     chosen_completion: torch.Tensor,
     rejected_completion: torch.Tensor,
     *,
-    pair_id: str,
+    pair_id: int,
     max_length: int,
     max_completion_length: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -214,7 +209,6 @@ class PreferenceStreamingDataset:
         prompt_key: str = "prompt",
         chosen_key: str = "chosen",
         rejected_key: str = "rejected",
-        pair_id_key: str = "prompt_id",
         metadata_key: str = "metadata",
         source_name: str = "preference_data",
         max_length: int = 1024,
@@ -242,14 +236,12 @@ class PreferenceStreamingDataset:
         self.prompt_key = prompt_key
         self.chosen_key = chosen_key
         self.rejected_key = rejected_key
-        self.pair_id_key = pair_id_key
         self.metadata_key = metadata_key
         self.source_name = source_name
         self.max_length = max_length
         self.max_completion_length = max_completion_length
         self.pair_capacity = pair_capacity or (2 * max_length)
         self.apply_chat_template_kwargs = apply_chat_template_kwargs
-        self._validate_unique_pair_ids()
         self._first_error: BaseException | None = None
         self._error_lock = threading.Lock()
         self._prefetch: PrefetchBuffer | None = None
@@ -263,18 +255,6 @@ class PreferenceStreamingDataset:
 
     def __len__(self) -> int:
         return len(self.reader)
-
-    def _validate_unique_pair_ids(self) -> None:
-        seen: set[str] = set()
-        for index in range(len(self.reader)):
-            pair_id = self.reader[index].get(self.pair_id_key)
-            if not isinstance(pair_id, str) or not pair_id:
-                message = f"preference row {index} requires a non-empty {self.pair_id_key}"
-                raise PreferenceDataError("schema", message, source_idx=index)
-            if pair_id in seen:
-                message = f"duplicate preference pair ID {pair_id!r} at row {index}"
-                raise PreferenceDataError("schema", message, source_idx=index, pair_id=pair_id)
-            seen.add(pair_id)
 
     def restrict_training_indices(self, indices: Iterable[int], *, dataset_seed_offset: int = 0) -> None:
         """Restrict epoch shuffling to the provided physical row IDs."""
@@ -323,7 +303,6 @@ class PreferenceStreamingDataset:
             prompt_key=self.prompt_key,
             chosen_key=self.chosen_key,
             rejected_key=self.rejected_key,
-            pair_id_key=self.pair_id_key,
             metadata_key=self.metadata_key,
             source_name=self.source_name,
         )
@@ -334,18 +313,12 @@ class PreferenceStreamingDataset:
         except PreferenceDataError:
             raise
         except Exception as exc:
-            pair_id = None
-            try:
-                raw_pair_id = self.reader[idx].get(self.pair_id_key)
-                pair_id = raw_pair_id if isinstance(raw_pair_id, str) else None
-            except Exception:
-                pass
             reason_code = _classify_preference_error(exc)
-            error = PreferenceDataError(reason_code, str(exc), source_idx=idx, pair_id=pair_id)
+            error = PreferenceDataError(reason_code, str(exc), source_idx=idx, pair_id=idx)
             logger.error(
                 "Rejected preference pair source_idx=%s pair_id=%r reason_code=%s",
                 idx,
-                pair_id,
+                idx,
                 reason_code,
             )
             raise error from exc
@@ -420,7 +393,7 @@ class PreferenceStreamingDataset:
         prompt: torch.Tensor,
         chosen: torch.Tensor,
         rejected: torch.Tensor,
-        pair_id: str,
+        pair_id: int,
         idx: int,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
         lengths = [prompt.numel() + chosen.numel(), prompt.numel() + rejected.numel()]
@@ -525,15 +498,8 @@ def pack_preference_pairs_for_tq(
     """Pack atomic pair rows and matching TransferQueue length metadata."""
     if not pairs:
         raise ValueError("preference pair batch must not be empty")
-    encoded_pair_ids = [
-        int.from_bytes(hashlib.sha256(pair.pair_id.encode()).digest()[:8], "big") >> 1 for pair in pairs
-    ]
-    source_pair_ids: dict[int, str] = {}
-    for pair, encoded_id in zip(pairs, encoded_pair_ids, strict=True):
-        if source_pair_ids.setdefault(encoded_id, pair.pair_id) != pair.pair_id:
-            raise ValueError("preference pair ID hash collision within batch")
     batch: dict[str, list[Any]] = {
-        "pair_ids": encoded_pair_ids,
+        "pair_ids": [pair.pair_id for pair in pairs],
         "chosen_tokens": [pair.chosen_tokens.tolist() for pair in pairs],
         "rejected_tokens": [pair.rejected_tokens.tolist() for pair in pairs],
         "chosen_loss_masks": [pair.chosen_loss_mask.tolist() for pair in pairs],

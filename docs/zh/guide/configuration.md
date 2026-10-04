@@ -418,7 +418,6 @@ PPO 当前支持同步 colocate 模式，并要求在 `--resource` 中包含 `cr
 |------|------|--------|------|
 | `--preference-chosen-key` | str | chosen | 数据集中首选回答或对话的字段名。 |
 | `--preference-rejected-key` | str | rejected | 数据集中非首选回答或对话的字段名。 |
-| `--preference-pair-id-key` | str | prompt_id | 每对样本唯一、非空的字符串 ID 所在字段。 |
 | `--preference-max-length` | int | 1024 | 每条分支的 prompt 与 completion token 总数上限。两条分支保留相同的 prompt 后缀，且上限不能超过 `--seq-length`。 |
 | `--preference-max-completion-length` | int | 512 | 每条分支的 completion token 上限。过长回答保留开头的 token，再裁剪共享 prompt 以满足 `--preference-max-length`；此值不能超过该总长度上限。 |
 | `--dpo-beta` | float | 0.1 | 仅用于 DPO。缩放策略与参考模型的对数概率差值，必须为有限正数。 |
